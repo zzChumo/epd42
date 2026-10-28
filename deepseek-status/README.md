@@ -82,7 +82,7 @@ Set-Content -Path .dstoken -Value 'sk-你的APIKey' -Encoding ascii
 ## 余额使用量说明
 
 默认每次刷新比较余额变化，下降则自动累加；只统计程序运行期间消费。
-   - 手动重新校准当前使用量：`./refresh.sh --reset-today`（以当前余额为起点重新累计）或修改。
+   - 手动重新校准当前使用量：`./refresh.sh --reset-today`（以当前余额为起点重新累计）或修改.dsstate.json。
 
 ## 诊断
 
