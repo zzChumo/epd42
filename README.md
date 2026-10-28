@@ -1,5 +1,11 @@
 # EPD42
 
+*本fork在原仓库基础上增加了一个每分钟自动刷新并更新DeepSeek余额、峰谷时段及当日用量的CLI应用，位于[deepseek-status](https://github.com/zzChumo/epd42/tree/main/deepseek-status)文件夹内。
+
+感谢该项目两个奠基人的分享与贡献。
+
+---
+
 [English](README_EN.md)
 
 4.2 寸电子墨水屏固件，带有一个[网页版上位机](https://pengwon.github.io/epd42/)，可以通过蓝牙传输图像到墨水屏。
