@@ -29,16 +29,94 @@ except ImportError:
 import renderer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BEIJING = timezone(timedelta(hours=8))
 API_URL = "https://api.deepseek.com/user/balance"
 
-# 峰谷时段（北京时间）：00:30–08:30 为谷时，其余为峰时
+# Windows 时区名 → IANA 名（只列常见项，查不到时回退显示原值）
+WIN_TZ_MAP = {
+    "China Standard Time": "Asia/Shanghai",
+    "Taipei Standard Time": "Asia/Taipei",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul",
+    "Singapore Standard Time": "Asia/Singapore",
+    "Malay Peninsula Standard Time": "Asia/Kuala_Lumpur",
+    "India Standard Time": "Asia/Kolkata",
+    "Arabian Standard Time": "Asia/Dubai",
+    "Arab Standard Time": "Asia/Riyadh",
+    "UTC": "Etc/UTC",
+    "GMT Standard Time": "Europe/London",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Romance Standard Time": "Europe/Paris",
+    "Moscow Standard Time": "Europe/Moscow",
+    "Russian Standard Time": "Europe/Moscow",
+    "Pacific Standard Time": "America/Los_Angeles",
+    "Mountain Standard Time": "America/Denver",
+    "Central Standard Time": "America/Chicago",
+    "Eastern Standard Time": "America/New_York",
+    "AUS Eastern Standard Time": "Australia/Sydney",
+    "New Zealand Standard Time": "Pacific/Auckland",
+    "Hawaiian Standard Time": "Pacific/Honolulu",
+}
+
+
+def local_tz_name() -> str:
+    """返回类似 Asia/Shanghai 的系统时区名（Windows 会做时区名映射）。"""
+    # 1) TZ 环境变量
+    tz = os.environ.get("TZ")
+    if tz and "/" in tz:
+        return tz
+    # 2) Linux/macOS：/etc/localtime 符号链接或 /etc/timezone
+    try:
+        real = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in real:
+            return real.split("zoneinfo/", 1)[1]
+    except Exception:
+        pass
+    try:
+        t = open("/etc/timezone", "r", encoding="utf-8").read().strip()
+        if t:
+            return t
+    except Exception:
+        pass
+    # 3) tzlocal（若安装）
+    try:
+        from tzlocal import get_localzone_name
+        name = get_localzone_name()
+        if name:
+            return name
+    except Exception:
+        pass
+    # 4) Windows 注册表
+    if sys.platform.startswith("win"):
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation",
+            ) as key:
+                win_name = winreg.QueryValueEx(key, "TimeZoneKeyName")[0]
+            return WIN_TZ_MAP.get(win_name, win_name)
+        except Exception:
+            pass
+    # 5) 兜底：缩写 + UTC 偏移
+    now = datetime.now().astimezone()
+    off = now.utcoffset() or timedelta(0)
+    total = int(off.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    hh, mm = divmod(total // 60, 60)
+    return f"{now.tzname() or 'Local'} (UTC{sign}{hh:02d}:{mm:02d})"
+
+
+# 时区名在启动时解析一次（跟随系统时间）
+TZ_NAME = local_tz_name()
+
+# 峰谷时段（跟随系统本地时间）：00:30–08:30 为谷时，其余为峰时
 OFFPEAK_START = (0, 30)
 OFFPEAK_END = (8, 30)
 
 
-def now_cn() -> datetime:
-    return datetime.now(BEIJING)
+def now_local() -> datetime:
+    return datetime.now().astimezone()
 
 
 def is_offpeak(dt: datetime) -> bool:
@@ -153,25 +231,25 @@ def update_today_used(state: dict, balance: float, today: str) -> tuple[float, d
 
 
 def stamp() -> str:
-    return now_cn().strftime("%Y-%m-%d %H:%M:%S")
+    return now_local().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def log(msg: str):
-    print(f"[{now_cn().strftime('%H:%M:%S')} 北京] {msg}", flush=True)
+    print(f"[{now_local().strftime('%H:%M:%S')} {TZ_NAME}] {msg}", flush=True)
 
 
 def render_frame(balance: float, used: float, refreshed: str, peak: bool):
     return renderer.render(
         balance_text=f"￥{balance:.2f}",
         today_used_text=f"￥{used:.2f}",
-        refreshed_text=f"上次刷新 {refreshed}",
+        refreshed_text=f"上次刷新 {refreshed} {TZ_NAME}",
         peak=peak,
     )
 
 
 async def do_refresh(args, cycle: int, session=None):
     """刷新一次；返回 (是否成功, session)。"""
-    t = now_cn()
+    t = now_local()
     peak = not is_offpeak(t)
     name = "梁文峰" if peak else "梁文谷"
     window = "峰时 08:30–00:30" if peak else "谷时 00:30–08:30"
@@ -327,6 +405,7 @@ def main():
 
     log("DeepSeek 状态墨水屏控制端启动")
     log(f"间隔 {args.interval}s ｜ 传输 {args.transport} ｜ token 文件 {args.token_file}")
+    log(f"系统时区：{TZ_NAME}")
     if args.transport == "ble":
         try:
             import bleak  # noqa: F401

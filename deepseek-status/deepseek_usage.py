@@ -16,8 +16,6 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
-
-BEIJING = timezone(timedelta(hours=8))
 PLATFORM_BASE = "https://platform.deepseek.com/api/v0/usage"
 
 
@@ -48,12 +46,12 @@ def _sum_costs(obj, today: str, found: list[bool]) -> float:
 
 def fetch_today_cost(user_token: str, timeout: int = 20):
     """返回 (原始响应文本 or None, 今日消费金额 or None)。"""
-    now = datetime.now(BEIJING)
-    start = datetime(now.year, now.month, now.day, tzinfo=BEIJING)
+    now = datetime.now().astimezone()
+    start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     params = {
         "start": int(start.timestamp()),
         "end": int(now.timestamp()),
-        "tz": 8 * 3600,
+        "tz": int((now.utcoffset() or timedelta(0)).total_seconds()),
     }
     headers = {
         "Authorization": f"Bearer {user_token}",

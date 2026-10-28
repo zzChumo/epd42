@@ -54,9 +54,15 @@ def render(
     f_side = _font(FONT_REG, 14)
     f_item_label = _font(FONT_REG, 21)
     f_item_value = _font(FONT_BOLD, 34)
-    f_foot = _font(FONT_REG, 15)
-
     pad = 18
+    # footer 字号自适应：带时区名后可能变长
+    f_foot = _font(FONT_REG, 15)
+    max_width = WIDTH - pad * 2
+    for size in (15, 14, 13, 12, 11):
+        f_foot = _font(FONT_REG, size)
+        if d.textlength(refreshed_text, font=f_foot) <= max_width:
+            break
+
     # ── 第一行：梁文峰（峰时）/ 梁文谷（谷时） ──
     name = "梁文峰" if peak else "梁文谷"
     window = "峰时 08:30–00:30" if peak else "谷时 00:30–08:30"
