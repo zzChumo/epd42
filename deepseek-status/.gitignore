@@ -1,0 +1,8 @@
+.dstoken
+.dptoken
+.dsstate.json
+python.txt
+fonts/
+preview/frame_*
+__pycache__/
+*.pyc

@@ -1,0 +1,7 @@
+# 可选：DeepSeek Platform 网站会话 token（用于查询「真实今日消费」）。
+# 获取方式：浏览器登录 https://platform.deepseek.com
+#   F12 → Application/存储 → Local Storage → platform.deepseek.com
+#   找到 userToken（可能叫 userToken / __userToken），复制其值到这里。
+# 然后把本文件改名为 .dptoken。
+# 注意：这是网页登录会话 token，不是 API Key（sk-…），请妥善保管。
+eyJhbGciOi...
