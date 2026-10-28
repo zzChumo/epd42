@@ -44,6 +44,7 @@ def render(
     *,
     subtitle_balance: str = "余额",
     subtitle_today: str = "今日使用",
+    window_text: str | None = None,
 ) -> Image.Image:
     """渲染一帧 400x300、4 级灰阶的 L 模式图像。"""
     img = Image.new("L", (WIDTH, HEIGHT), WHITE)
@@ -65,7 +66,7 @@ def render(
 
     # ── 第一行：梁文峰（峰时）/ 梁文谷（谷时） ──
     name = "梁文峰" if peak else "梁文谷"
-    window = "峰时 08:30–00:30" if peak else "谷时 00:30–08:30"
+    window = window_text if window_text else ("峰时 08:30–00:30" if peak else "谷时 00:30–08:30")
     _draw_text(d, (pad, 18), "DeepSeek 计费时段", f_label, BLACK)
     _draw_text(d, (pad, 40), name, f_name, BLACK)
     _draw_text(d, (WIDTH - pad, 22), window, f_side, BLACK, anchor="ra")

@@ -110,20 +110,59 @@ def local_tz_name() -> str:
 # 时区名在启动时解析一次（跟随系统时间）
 TZ_NAME = local_tz_name()
 
-# 峰谷时段（跟随系统本地时间）：00:30–08:30 为谷时，其余为峰时
-OFFPEAK_START = (0, 30)
-OFFPEAK_END = (8, 30)
+# 峰谷判断永远按北京时间（DeepSeek 官方计费口径）
+BEIJING_TZ = timezone(timedelta(hours=8))
+OFFPEAK_START = (0, 30)   # 北京时间 00:30 起
+OFFPEAK_END = (8, 30)     # 北京时间 08:30 止
 
 
 def now_local() -> datetime:
     return datetime.now().astimezone()
 
 
-def is_offpeak(dt: datetime) -> bool:
+def now_beijing() -> datetime:
+    return datetime.now(BEIJING_TZ)
+
+
+def is_offpeak(now_bj: datetime | None = None) -> bool:
+    """是否谷时 —— 永远按北京时间判断（与系统时区无关）。"""
+    dt = now_bj or now_beijing()
     m = dt.hour * 60 + dt.minute
     start = OFFPEAK_START[0] * 60 + OFFPEAK_START[1]
     end = OFFPEAK_END[0] * 60 + OFFPEAK_END[1]
     return start <= m < end
+
+
+def local_utcoffset() -> timedelta:
+    """当前系统 UTC 偏移。可用环境变量 DS_EPD_TZ_OFFSET（秒）覆盖，便于测试。"""
+    override = os.environ.get("DS_EPD_TZ_OFFSET")
+    if override:
+        try:
+            return timedelta(seconds=int(float(override)))
+        except ValueError:
+            pass
+    return datetime.now().astimezone().utcoffset() or timedelta(0)
+
+
+def window_text_local(peak: bool, now_bj: datetime | None = None) -> str:
+    """把北京时间的峰/谷时段换算成系统本地时间显示（仅右上角文案）。
+
+    峰谷本身永远按北京时间判断；这里只是把该时段换算成用户本地时区的钟点，
+    换算用「UTC 偏移差」做算术，不依赖系统 tzdata。
+    """
+    dt = (now_bj or now_beijing()).astimezone(BEIJING_TZ)
+    if peak:
+        start_bj = dt.replace(hour=OFFPEAK_END[0], minute=OFFPEAK_END[1], second=0, microsecond=0)
+        end_bj = dt.replace(hour=OFFPEAK_START[0], minute=OFFPEAK_START[1], second=0, microsecond=0) + timedelta(days=1)
+        label = "峰时"
+    else:
+        start_bj = dt.replace(hour=OFFPEAK_START[0], minute=OFFPEAK_START[1], second=0, microsecond=0)
+        end_bj = dt.replace(hour=OFFPEAK_END[0], minute=OFFPEAK_END[1], second=0, microsecond=0)
+        label = "谷时"
+    shift = local_utcoffset() - timedelta(hours=8)
+    local_start = (start_bj + shift).strftime("%H:%M")
+    local_end = (end_bj + shift).strftime("%H:%M")
+    return f"{label} {local_start}–{local_end}"
 
 
 def _decode_text_file(data: bytes) -> str:
@@ -244,15 +283,17 @@ def render_frame(balance: float, used: float, refreshed: str, peak: bool):
         today_used_text=f"￥{used:.2f}",
         refreshed_text=f"上次刷新 {refreshed} {TZ_NAME}",
         peak=peak,
+        window_text=window_text_local(peak),
     )
 
 
 async def do_refresh(args, cycle: int, session=None):
     """刷新一次；返回 (是否成功, session)。"""
     t = now_local()
-    peak = not is_offpeak(t)
+    now_bj = now_beijing()
+    peak = not is_offpeak(now_bj)                 # 峰谷判断：北京时间
     name = "梁文峰" if peak else "梁文谷"
-    window = "峰时 08:30–00:30" if peak else "谷时 00:30–08:30"
+    window = window_text_local(peak, now_bj)      # 右上角时段：显示为本地时间
 
     log(f"===== 第 {cycle} 次刷新 @ {t.strftime('%Y-%m-%d %H:%M:%S')} =====")
     log(f"计费时段：{name}（{window}）")
@@ -405,7 +446,7 @@ def main():
 
     log("DeepSeek 状态墨水屏控制端启动")
     log(f"间隔 {args.interval}s ｜ 传输 {args.transport} ｜ token 文件 {args.token_file}")
-    log(f"系统时区：{TZ_NAME}")
+    log(f"系统时区：{TZ_NAME}（界面时间按此显示；峰谷判断固定按北京时间 UTC+8）")
     if args.transport == "ble":
         try:
             import bleak  # noqa: F401
