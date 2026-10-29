@@ -1,11 +1,14 @@
-<p align="center">![pnygYQS.png](https://s41.ax1x.com/2026/10/29/pnygYQS.png)</p>
+<p align="center"><img width="50%" src="https://s41.ax1x.com/2026/10/29/pnygYQS.png"></img></p>
 
-<h1 align="ceenter">DeepSeek余额及用量・峰谷状态显示（EPD_4in2）</h1>
+<h1 align="center">DeepSeek余额及用量・峰谷状态显示（EPD_4in2）</h1>
 
 <p align="center">
 将您的DeepSeek账户状态显示在该项目原仓库所支持的4.2寸墨水屏上，
 通过命令行CLI定时刷新（默认60s）。
 </p>
+
+<br>
+<br>
 
 ## 画面内容（4 行）
 
