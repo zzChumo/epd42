@@ -20,6 +20,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -70,8 +71,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -117,6 +121,8 @@ private data class Snapshot(
 @Composable
 private fun EpdApp() {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val dark = isSystemInDarkTheme()
@@ -241,6 +247,8 @@ private fun EpdApp() {
     val currentMode = mode
 
     fun saveConfig() {
+        focusManager.clearFocus()
+        keyboardController?.hide()
         if (!storageReady(context)) {
             requestPermissions()
             scope.launch { snackbar.showSnackbar("请先授予存储权限，然后重试保存") }
@@ -290,6 +298,8 @@ private fun EpdApp() {
     }
 
     fun runNow() {
+        focusManager.clearFocus()
+        keyboardController?.hide()
         if (running || looping) return
         if (apiKey.isBlank()) {
             scope.launch { snackbar.showSnackbar("请先填写 DeepSeek API Key") }
@@ -363,6 +373,13 @@ private fun EpdApp() {
                     .fillMaxSize()
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
+                    .pointerInput(Unit) {
+                        // 点空白处让 TextField 失焦并收起键盘（内容保持不变）
+                        detectTapGestures(onTap = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                        })
+                    }
                     .padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
