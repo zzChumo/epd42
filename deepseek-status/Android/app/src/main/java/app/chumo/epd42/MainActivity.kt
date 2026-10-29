@@ -344,7 +344,7 @@ private fun EpdApp() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("dsEPD42", fontWeight = FontWeight.SemiBold) },
+                    title = { Text("DeepSeek EPD42", fontWeight = FontWeight.SemiBold) },
                     actions = {
                         IconButton(onClick = { showAbout = true }) {
                             Icon(Icons.Filled.AccountCircle, contentDescription = "关于")
