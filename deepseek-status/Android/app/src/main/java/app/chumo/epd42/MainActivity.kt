@@ -20,6 +20,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,6 +42,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -86,6 +89,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -439,30 +443,36 @@ private fun EpdApp() {
                         enabled = saveEnabled,
                         modifier = Modifier.weight(1f)
                     ) { Text("保存") }
-                    // 运行 / 结束：单击运行，长按进入每分钟自动刷新，运行中单击立即结束
-                    val runEnabled = looping || !running
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(ButtonDefaults.MinHeight)
-                            .clip(ButtonDefaults.shape)
-                            .background(
-                                if (runEnabled) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                            )
-                            .combinedClickable(
-                                enabled = runEnabled,
-                                onClick = { if (looping) stopLoop() else runNow() },
-                                onLongClick = { if (!looping) startLoop() }
-                            ),
-                        contentAlignment = Alignment.Center
+                    // 运行 / 结束：单击运行，长按（约 0.5s）进入每分钟自动刷新；运行中单击立即结束
+                    val runInteraction = remember { MutableInteractionSource() }
+                    var longPressFired by remember { mutableStateOf(false) }
+                    LaunchedEffect(runInteraction) {
+                        // collectLatest：一旦松手（Release/Cancel）会取消 delay，避免“短按也触发长按”
+                        runInteraction.interactions.collectLatest { event ->
+                            if (event is PressInteraction.Press) {
+                                longPressFired = false
+                                delay(500L)
+                                longPressFired = true
+                                Haptics.longPress(context)   // 长按震动反馈（适配线性马达）
+                                if (!looping) startLoop()
+                            }
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            if (longPressFired) {
+                                longPressFired = false   // 长按已触发，忽略这次点击
+                            } else if (looping) {
+                                stopLoop()
+                            } else {
+                                runNow()
+                            }
+                        },
+                        enabled = looping || !running,
+                        interactionSource = runInteraction,
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text(
-                            text = if (looping) "结束" else "运行",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (runEnabled) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                        )
+                        Text(if (looping) "结束" else "运行")
                     }
                 }
 
