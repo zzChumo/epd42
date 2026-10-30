@@ -102,8 +102,13 @@ class LoopService : Service() {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    delayMs = 15_000L
-                    updateStatus("刷新失败（${e.javaClass.simpleName}: ${e.message}），稍后重试…")
+                    delayMs = 10_000L
+                    val reason = if (e is java.net.UnknownHostException) {
+                        "DNS 解析失败（后台网络受限），重试中…"
+                    } else {
+                        "刷新失败（${e.javaClass.simpleName}: ${e.message}），稍后重试…"
+                    }
+                    updateStatus(reason)
                 }
                 renewWakeLock()
                 val elapsed = System.currentTimeMillis() - startedAt

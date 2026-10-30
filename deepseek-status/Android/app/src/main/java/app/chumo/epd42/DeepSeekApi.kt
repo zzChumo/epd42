@@ -1,38 +1,41 @@
 package app.chumo.epd42
 
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
-import java.io.BufferedInputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
-/** DeepSeek 余额 / 用量接口（HttpURLConnection，无第三方依赖）。 */
+/** DeepSeek balance / usage API (OkHttp + fallback DNS so background requests survive Doze). */
 object DeepSeekApi {
 
-    private fun open(url: String, bearer: String, platform: Boolean = false): HttpURLConnection {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.requestMethod = "GET"
-        conn.connectTimeout = 15000
-        conn.readTimeout = 20000
-        conn.setRequestProperty("Authorization", "Bearer $bearer")
-        conn.setRequestProperty("Accept", "application/json")
-        conn.setRequestProperty("User-Agent", "epd42-android/0.1")
-        if (platform) conn.setRequestProperty("x-client-platform", "web")
-        return conn
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .dns(FallbackDns())
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+    private fun get(url: String, bearer: String, platform: Boolean = false): String {
+        val builder = Request.Builder()
+            .url(url)
+            .get()
+            .header("Authorization", "Bearer $bearer")
+            .header("Accept", "application/json")
+            .header("User-Agent", "epd42-android/0.2")
+        if (platform) builder.header("x-client-platform", "web")
+        client.newCall(builder.build()).execute().use { response ->
+            val body = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                throw IllegalStateException("HTTP ${response.code}: ${body.take(200)}")
+            }
+            return body
+        }
     }
 
-    private fun readText(conn: HttpURLConnection): String {
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
-        val text = BufferedInputStream(stream).use { it.readBytes().toString(Charsets.UTF_8) }
-        if (code !in 200..299) throw IllegalStateException("HTTP $code: ${text.take(200)}")
-        return text
-    }
-
-    /** 返回 (原始响应, 人民币余额)。 */
+    /** @return (raw response, CNY balance) */
     fun fetchBalance(apiKey: String): Pair<String, Double> {
-        val conn = open("https://api.deepseek.com/user/balance", apiKey)
-        val raw = readText(conn)
+        val raw = get("https://api.deepseek.com/user/balance", apiKey)
         val json = JSONObject(raw)
         val infos = json.optJSONArray("balance_infos")
             ?: throw IllegalStateException("余额接口未返回 balance_infos")
@@ -46,12 +49,16 @@ object DeepSeekApi {
         return raw to balance
     }
 
-    /** 可选：Platform 网页 userToken 查询今日消费（API Key 查不到用量）。返回 null 表示未找到可信金额。 */
-    fun fetchTodayCost(userToken: String, dayStartSec: Long, nowSec: Long, tzOffsetSec: Int): Pair<String, Double?>? {
+    /** Optional: platform web session token, returns today's cost. null = not found. */
+    fun fetchTodayCost(
+        userToken: String,
+        dayStartSec: Long,
+        nowSec: Long,
+        tzOffsetSec: Int,
+    ): Pair<String, Double?>? {
         val url = "https://platform.deepseek.com/api/v0/usage/by_api_key/cost" +
                 "?start=$dayStartSec&end=$nowSec&tz=$tzOffsetSec"
-        val conn = open(url, userToken, platform = true)
-        val raw = readText(conn)
+        val raw = get(url, userToken, platform = true)
         val json = JSONObject(raw)
         var found = false
         var sum = 0.0
