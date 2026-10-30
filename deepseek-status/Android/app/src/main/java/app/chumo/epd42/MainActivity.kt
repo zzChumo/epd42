@@ -93,9 +93,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -148,9 +146,7 @@ private fun EpdApp() {
     var looping by remember { mutableStateOf(false) }
     var loopStartedAt by remember { mutableStateOf(0L) }
     var pendingLoop by remember { mutableStateOf(false) }
-    var fallbackLoop by remember { mutableStateOf(false) }
-    var loopRetries by remember { mutableStateOf(0) }
-    var loopJob by remember { mutableStateOf<Job?>(null) }
+    var batteryPromptShown by remember { mutableStateOf(false) }
 
     var lastStorageReady by remember { mutableStateOf(false) }
     val reloadRef = remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -229,8 +225,8 @@ private fun EpdApp() {
             loadTokensFromDisk()
         }
         lastStorageReady = ready
-        // 与前台服务状态保持一致（应用内兜底循环时以本地状态为准）
-        if (!fallbackLoop) looping = LoopStatus.running
+        // 与前台服务实际状态保持一致
+        looping = LoopStatus.running
     }
 
     val snapshot = Snapshot(apiKey, localUsed, userToken, mode)
@@ -291,44 +287,40 @@ private fun EpdApp() {
         }）"
     }
 
-    /** 前台服务不可用时的兜底：在应用内自己跑每分钟循环（切后台可能被系统暂停） */
-    fun startFallbackLoop(reason: String) {
-        if (fallbackLoop) return
-        fallbackLoop = true
-        loopJob?.cancel()
-        LoopStatus.status = "应用内常态刷新中（前台服务不可用）"
-        status = "前台服务不可用（$reason），已切换为应用内常态刷新"
-        scope.launch { snackbar.showSnackbar("已切换为应用内常态刷新") }
-        loopJob = scope.launch {
-            while (isActive) {
-                try {
-                    runCycle()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    status = "本轮刷新失败：${e.javaClass.simpleName}: ${e.message}"
-                }
-                delay(60_000L)
+    /** 请求忽略电池优化（后台联网/唤醒更稳；系统会弹一次确认框） */
+    fun requestIgnoreBatteryOptimizationsIfNeeded() {
+        if (batteryPromptShown) return
+        batteryPromptShown = true
+        runCatching {
+            val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                context.startActivity(
+                    Intent(
+                        android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        android.net.Uri.parse("package:${context.packageName}")
+                    )
+                )
             }
         }
     }
 
-    /** 真正启动常态循环（长按 / 单次运行结束后自动开始 / 服务失败兜底共用） */
+    /** 启动常驻刷新：全部逻辑都在前台服务里跑，保证后台也能联网 */
     fun launchLoop() {
         if (looping) return
         pendingLoop = false
         LoopStatus.lastBitmap = null
         looping = true
         loopStartedAt = System.currentTimeMillis()
-        loopRetries = 0
-        fallbackLoop = false
-        status = "常态刷新已启动（每 60 秒）"
+        status = "常驻刷新已启动（每 60 秒）"
+        requestIgnoreBatteryOptimizationsIfNeeded()
         val started = runCatching {
             LoopStatus.running = true
             LoopService.start(context)
         }
         if (started.isFailure) {
-            startFallbackLoop(started.exceptionOrNull()?.message ?: "启动异常")
+            val msg = started.exceptionOrNull()?.message ?: "未知错误"
+            status = "常驻服务启动失败：$msg（正在重试…）"
+            scope.launch { snackbar.showSnackbar("常驻服务启动失败，正在重试…") }
         }
     }
 
@@ -336,7 +328,7 @@ private fun EpdApp() {
         focusManager.clearFocus()
         keyboardController?.hide()
         if (looping) {
-            scope.launch { snackbar.showSnackbar("常态刷新进行中，点「结束」可停止") }
+            scope.launch { snackbar.showSnackbar("常驻刷新进行中，点「结束」可停止") }
             return
         }
         if (running) {
@@ -373,7 +365,7 @@ private fun EpdApp() {
         }
     }
 
-    /** 长按「运行」：启动每分钟刷新一次的前台服务；若正在单次运行，则排队等它结束后自动开始 */
+    /** 长按「运行」：启动每分钟刷新一次的常驻服务；单次运行中长按则排队 */
     fun startLoop() {
         if (looping) return
         if (apiKey.isBlank()) {
@@ -387,53 +379,40 @@ private fun EpdApp() {
         }
         if (running) {
             pendingLoop = true
-            status = "单次运行结束后将自动开始常态刷新…"
-            scope.launch { snackbar.showSnackbar("已排队：本次运行结束后开始常态刷新") }
+            status = "单次运行结束后将自动开始常驻刷新…"
+            scope.launch { snackbar.showSnackbar("已排队：本次运行结束后开始常驻刷新") }
             return
         }
         launchLoop()
     }
 
-    /** 点「结束」：停掉前台服务 / 应用内兜底循环 */
+    /** 点「结束」：停掉常驻服务 */
     fun stopLoop() {
         pendingLoop = false
-        loopJob?.cancel()
-        loopJob = null
-        fallbackLoop = false
         runCatching { LoopService.stop(context) }
         LoopStatus.running = false
         looping = false
-        status = "常态刷新已结束"
+        status = "常驻刷新已结束"
     }
 
-    LaunchedEffect(looping, fallbackLoop) {
+    LaunchedEffect(looping) {
         while (looping) {
-            if (!fallbackLoop) {
-                val s = LoopStatus.status
-                if (s.isNotEmpty() && s != status) status = s
-            }
+            val s = LoopStatus.status
+            if (s.isNotEmpty() && s != status) status = s
             LoopStatus.lastBitmap?.let { bmp -> if (bmp !== preview) preview = bmp }
 
-            if (!fallbackLoop && !LoopStatus.running &&
-                System.currentTimeMillis() - loopStartedAt > 2_000L
-            ) {
-                if (loopRetries < 2) {
-                    // 前台服务没起来/被系统掐了：先自愈重试
-                    loopRetries += 1
-                    loopStartedAt = System.currentTimeMillis()
-                    val retried = runCatching {
-                        LoopStatus.running = true
-                        LoopService.start(context)
-                    }
-                    if (retried.isFailure) {
-                        startFallbackLoop(retried.exceptionOrNull()?.message ?: "启动异常")
-                    }
-                } else {
-                    // 重试也失败：用应用内循环兜底，保证「结束」按钮始终可用
-                    startFallbackLoop("前台服务启动失败")
+            // 常驻服务没起来/被系统掐掉：自动重试拉起（不退出循环）
+            if (!LoopStatus.running && System.currentTimeMillis() - loopStartedAt > 3_000L) {
+                loopStartedAt = System.currentTimeMillis()
+                val retried = runCatching {
+                    LoopStatus.running = true
+                    LoopService.start(context)
+                }
+                if (retried.isFailure) {
+                    status = "常驻服务未运行，正在重试…（建议允许后台运行/忽略电池优化）"
                 }
             }
-            delay(800L)
+            delay(3_000L)
         }
     }
 

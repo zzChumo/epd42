@@ -3,6 +3,7 @@ package app.chumo.epd42
 import android.content.Context
 import android.graphics.Bitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.max
 
@@ -62,6 +63,20 @@ object RefreshEngine {
         return used
     }
 
+    /** 网络操作重试（后台/弱网时提高成功率）。 */
+    private suspend fun <T> withNetworkRetry(times: Int = 3, block: suspend () -> T): T {
+        var last: Exception? = null
+        for (i in 0 until times) {
+            try {
+                return block()
+            } catch (e: Exception) {
+                last = e
+                if (i < times - 1) delay(1_000L * (i + 1))
+            }
+        }
+        throw last ?: IllegalStateException("网络请求失败")
+    }
+
     /** 执行一轮刷新；apiKeyOverride 用于界面上「还没保存」的 Key，null 表示从 .dstoken 读。 */
     suspend fun run(
         context: Context,
@@ -78,8 +93,10 @@ object RefreshEngine {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: throw IllegalStateException("未配置 DeepSeek API Key（.dstoken 为空）")
-        // 网络请求必须离开主线程（否则 NetworkOnMainThreadException，消息为空）
-        val (_, balance) = withContext(Dispatchers.IO) { DeepSeekApi.fetchBalance(apiKey) }
+        // 网络请求必须离开主线程；后台网络偶发失败时自动重试
+        val (_, balance) = withContext(Dispatchers.IO) {
+            withNetworkRetry { DeepSeekApi.fetchBalance(apiKey) }
+        }
 
         val peak = !LocalTime.isOffpeak()
         val window = LocalTime.windowTextLocal(peak)
