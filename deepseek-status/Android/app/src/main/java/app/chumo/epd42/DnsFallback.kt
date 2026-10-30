@@ -7,6 +7,8 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.UnknownHostException
 import java.util.Random
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * DNS fallback:
@@ -19,10 +21,16 @@ class FallbackDns(
 ) : Dns {
 
     override fun lookup(hostname: String): List<InetAddress> {
-        // 1) system resolver
+        // 1) system resolver (bounded: it can block for a long time on a broken network)
         try {
-            val result = Dns.SYSTEM.lookup(hostname)
-            if (result.isNotEmpty()) return result
+            val executor = Executors.newSingleThreadExecutor()
+            try {
+                val future = executor.submit<List<InetAddress>> { Dns.SYSTEM.lookup(hostname) }
+                val result = future.get(4, TimeUnit.SECONDS)
+                if (result.isNotEmpty()) return result
+            } finally {
+                executor.shutdownNow()
+            }
         } catch (_: Exception) {
         }
         // 2) raw UDP DNS
@@ -40,7 +48,7 @@ class FallbackDns(
         val id = Random().nextInt(0xFFFF)
         val query = buildQuery(hostname, id)
         DatagramSocket().use { socket ->
-            socket.soTimeout = 3000
+            socket.soTimeout = 2500
             val addr = InetAddress.getByName(server)
             socket.send(DatagramPacket(query, query.size, addr, 53))
             val buf = ByteArray(1500)

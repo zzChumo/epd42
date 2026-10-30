@@ -93,7 +93,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -348,7 +350,12 @@ private fun EpdApp() {
         scope.launch {
             var error: Exception? = null
             try {
-                runCycle()
+                // 单次运行最多 120 秒，避免网络/蓝牙异常时按钮一直“运行中…”
+                withTimeout(120_000L) {
+                    runCycle()
+                }
+            } catch (e: TimeoutCancellationException) {
+                status = "运行超时（网络或蓝牙无响应），请稍后重试"
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -389,6 +396,7 @@ private fun EpdApp() {
     /** 点「结束」：停掉常驻服务 */
     fun stopLoop() {
         pendingLoop = false
+        status = "正在结束常驻刷新…"
         runCatching { LoopService.stop(context) }
         LoopStatus.running = false
         looping = false
@@ -528,23 +536,25 @@ private fun EpdApp() {
                     LaunchedEffect(runInteraction) {
                         // collectLatest：一旦松手（Release/Cancel）会取消 delay，避免“短按也触发长按”
                         runInteraction.interactions.collectLatest { event ->
-                            if (event is PressInteraction.Press) {
+                            if (event is PressInteraction.Press && !looping) {
                                 longPressFired = false
                                 delay(500L)
                                 longPressFired = true
                                 Haptics.longPress(context)   // 长按震动反馈（适配线性马达）
-                                if (!looping) startLoop()
+                                startLoop()
                             }
                         }
                     }
                     Button(
                         onClick = {
-                            if (longPressFired) {
-                                longPressFired = false   // 长按已触发，忽略这次点击
-                            } else if (looping) {
-                                stopLoop()
-                            } else {
-                                runNow()
+                            when {
+                                looping -> {
+                                    // 结束：不管是短按还是长按，都立即停止
+                                    longPressFired = false
+                                    stopLoop()
+                                }
+                                longPressFired -> longPressFired = false  // 长按已触发，忽略这次点击
+                                else -> runNow()
                             }
                         },
                         enabled = true,

@@ -64,7 +64,7 @@ object RefreshEngine {
     }
 
     /** 网络操作重试（后台/弱网时提高成功率）。 */
-    private suspend fun <T> withNetworkRetry(times: Int = 3, block: suspend () -> T): T {
+    private suspend fun <T> withNetworkRetry(times: Int = 2, block: suspend () -> T): T {
         var last: Exception? = null
         for (i in 0 until times) {
             try {

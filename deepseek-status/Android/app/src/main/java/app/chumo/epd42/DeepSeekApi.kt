@@ -10,9 +10,10 @@ object DeepSeekApi {
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .dns(FallbackDns())
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 

@@ -22,7 +22,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /**
  * Keep-alive foreground service:
@@ -80,25 +82,31 @@ class LoopService : Service() {
                         updateStatus("等待网络恢复…")
                         delayMs = 10_000L
                     } else {
-                        val cfg = readConfig()
-                        val rendered = RefreshEngine.run(
-                            context = this@LoopService,
-                            mode = cfg.mode,
-                            localUsedText = cfg.localUsedText,
-                            userTokenText = cfg.userTokenText,
-                            apiKeyOverride = null,
-                        ) { msg ->
-                            updateStatus(msg)
+                        // 单轮最多 70 秒，避免网络/蓝牙异常时整条循环卡死
+                        withTimeout(70_000L) {
+                            val cfg = readConfig()
+                            val rendered = RefreshEngine.run(
+                                context = this@LoopService,
+                                mode = cfg.mode,
+                                localUsedText = cfg.localUsedText,
+                                userTokenText = cfg.userTokenText,
+                                apiKeyOverride = null,
+                            ) { msg ->
+                                updateStatus(msg)
+                            }
+                            LoopStatus.lastBitmap = rendered.bitmap
+                            updateStatus(
+                                "已推送：${rendered.deviceName}（余额 ￥${
+                                    String.format(java.util.Locale.US, "%.2f", rendered.balance)
+                                } / 今日使用 ￥${
+                                    String.format(java.util.Locale.US, "%.2f", rendered.used)
+                                }）"
+                            )
                         }
-                        LoopStatus.lastBitmap = rendered.bitmap
-                        updateStatus(
-                            "已推送：${rendered.deviceName}（余额 ￥${
-                                String.format(java.util.Locale.US, "%.2f", rendered.balance)
-                            } / 今日使用 ￥${
-                                String.format(java.util.Locale.US, "%.2f", rendered.used)
-                            }）"
-                        )
                     }
+                } catch (e: TimeoutCancellationException) {
+                    delayMs = 10_000L
+                    updateStatus("本轮刷新超时，稍后重试…")
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
