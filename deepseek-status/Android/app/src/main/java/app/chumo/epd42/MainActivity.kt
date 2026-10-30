@@ -536,24 +536,27 @@ private fun EpdApp() {
                     LaunchedEffect(runInteraction) {
                         // collectLatest：一旦松手（Release/Cancel）会取消 delay，避免“短按也触发长按”
                         runInteraction.interactions.collectLatest { event ->
-                            if (event is PressInteraction.Press && !looping) {
-                                longPressFired = false
-                                delay(500L)
-                                longPressFired = true
-                                Haptics.longPress(context)   // 长按震动反馈（适配线性马达）
-                                startLoop()
+                            if (event is PressInteraction.Press) {
+                                if (!looping) {
+                                    longPressFired = false
+                                    delay(500L)
+                                    longPressFired = true
+                                    Haptics.longPress(context)   // 长按震动反馈（适配线性马达）
+                                    startLoop()
+                                } else {
+                                    // 已经在循环中：按下时清掉长按标记，单击「结束」永远有效
+                                    longPressFired = false
+                                }
                             }
                         }
                     }
                     Button(
                         onClick = {
                             when {
-                                looping -> {
-                                    // 结束：不管是短按还是长按，都立即停止
-                                    longPressFired = false
-                                    stopLoop()
-                                }
-                                longPressFired -> longPressFired = false  // 长按已触发，忽略这次点击
+                                // 长按刚刚触发过：这次抬起不算点击（否则会立刻触发「结束」）
+                                longPressFired -> longPressFired = false
+                                // 循环中：短按/长按都立即结束
+                                looping -> stopLoop()
                                 else -> runNow()
                             }
                         },
