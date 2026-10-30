@@ -75,12 +75,9 @@ class LoopService : Service() {
 
         job = scope.launch {
             while (isActive) {
-                val startedAt = System.currentTimeMillis()
-                var delayMs = LoopStatus.INTERVAL_MS
                 try {
                     if (!hasNetwork()) {
                         updateStatus("等待网络恢复…")
-                        delayMs = 10_000L
                     } else {
                         // 单轮最多 70 秒，避免网络/蓝牙异常时整条循环卡死
                         withTimeout(70_000L) {
@@ -94,23 +91,31 @@ class LoopService : Service() {
                             ) { msg ->
                                 updateStatus(msg)
                             }
-                            LoopStatus.lastBitmap = rendered.bitmap
-                            updateStatus(
-                                "已推送：${rendered.deviceName}（余额 ￥${
-                                    String.format(java.util.Locale.US, "%.2f", rendered.balance)
-                                } / 今日使用 ￥${
-                                    String.format(java.util.Locale.US, "%.2f", rendered.used)
-                                }）"
-                            )
+                            if (rendered.skipped) {
+                                updateStatus(
+                                    "余额与用量均未变化，跳过刷屏（余额 ￥${
+                                        String.format(java.util.Locale.US, "%.2f", rendered.balance)
+                                    } / 今日使用 ￥${
+                                        String.format(java.util.Locale.US, "%.2f", rendered.used)
+                                    }）"
+                                )
+                            } else {
+                                LoopStatus.lastBitmap = rendered.bitmap
+                                updateStatus(
+                                    "已推送：${rendered.deviceName}（余额 ￥${
+                                        String.format(java.util.Locale.US, "%.2f", rendered.balance)
+                                    } / 今日使用 ￥${
+                                        String.format(java.util.Locale.US, "%.2f", rendered.used)
+                                    }）"
+                                )
+                            }
                         }
                     }
                 } catch (e: TimeoutCancellationException) {
-                    delayMs = 10_000L
                     updateStatus("本轮刷新超时，稍后重试…")
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    delayMs = 10_000L
                     val reason = if (e is java.net.UnknownHostException) {
                         "DNS 解析失败（后台网络受限），重试中…"
                     } else {
@@ -119,9 +124,8 @@ class LoopService : Service() {
                     updateStatus(reason)
                 }
                 renewWakeLock()
-                val elapsed = System.currentTimeMillis() - startedAt
-                val remain = (delayMs - elapsed).coerceAtLeast(2_000L)
-                delay(remain)
+                // 与 CLI 完全一致：本轮（无论成功/失败/跳过）结束后固定等待 60 秒
+                delay(LoopStatus.INTERVAL_MS)
             }
         }
     }

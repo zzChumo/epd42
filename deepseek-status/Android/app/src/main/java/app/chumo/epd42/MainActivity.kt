@@ -281,12 +281,16 @@ private fun EpdApp() {
             userTokenText = currentUserToken,
             apiKeyOverride = apiKey.trim(),
         ) { msg -> status = msg }
-        preview = rendered.bitmap
-        status = "已推送：${rendered.deviceName}（余额 ￥${
-            String.format(java.util.Locale.US, "%.2f", rendered.balance)
-        } / 今日使用 ￥${
-            String.format(java.util.Locale.US, "%.2f", rendered.used)
-        }）"
+        if (rendered.skipped) {
+            status = "余额与用量均未变化，跳过刷屏"
+        } else {
+            rendered.bitmap?.let { preview = it }
+            status = "已推送：${rendered.deviceName}（余额 ￥${
+                String.format(java.util.Locale.US, "%.2f", rendered.balance)
+            } / 今日使用 ￥${
+                String.format(java.util.Locale.US, "%.2f", rendered.used)
+            }）"
+        }
     }
 
     /** 请求忽略电池优化（后台联网/唤醒更稳；系统会弹一次确认框） */

@@ -11,10 +11,11 @@ import kotlin.math.max
 object RefreshEngine {
 
     data class Rendered(
-        val bitmap: Bitmap,
         val balance: Double,
         val used: Double,
-        val deviceName: String,
+        val bitmap: Bitmap?,
+        val deviceName: String?,
+        val skipped: Boolean,
     )
 
     /**
@@ -84,6 +85,7 @@ object RefreshEngine {
         localUsedText: String,
         userTokenText: String,
         apiKeyOverride: String? = null,
+        skipIfUnchanged: Boolean = true,
         onStatus: (String) -> Unit = {},
     ): Rendered {
         onStatus("正在获取余额…")
@@ -103,6 +105,19 @@ object RefreshEngine {
         val used = withContext(Dispatchers.IO) {
             computeTodayUsed(mode, localUsedText, userTokenText, balance)
         }
+
+        // 余额与今日使用量都没变 → 跳过刷屏（与桌面 CLI 行为一致）
+        if (skipIfUnchanged) {
+            val displayed = withContext(Dispatchers.IO) { FileStore.readDisplayed() }
+            if (displayed != null &&
+                kotlin.math.abs(displayed.first - balance) < 1e-9 &&
+                kotlin.math.abs(displayed.second - used) < 1e-9
+            ) {
+                onStatus("余额与用量均未变化，跳过本次刷屏")
+                return Rendered(balance, used, null, null, skipped = true)
+            }
+        }
+
         val stamp = LocalTime.stampNow() + " " + LocalTime.tzName()
         val bitmap = withContext(Dispatchers.Default) {
             StatusRenderer.render(balance, used, stamp, peak, window)
@@ -112,6 +127,6 @@ object RefreshEngine {
         val planes = withContext(Dispatchers.Default) { StatusRenderer.toPlanes(bitmap) }
         val push = Epd42Ble.push(context, planes.first, planes.second, onLog = onStatus)
         withContext(Dispatchers.IO) { FileStore.markDisplayed(balance, used) }
-        return Rendered(bitmap, balance, used, push.deviceName)
+        return Rendered(balance, used, bitmap, push.deviceName, skipped = false)
     }
 }
