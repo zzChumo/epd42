@@ -1,5 +1,6 @@
 package app.chumo.epd42
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -12,6 +13,17 @@ object StatusRenderer {
     const val HEIGHT = 300
 
     private val LEVELS = intArrayOf(0, 85, 170, 255)
+
+    /** 随包附带的中文粗体（系统 Noto 字重被裁剪，墨屏上会太细）。 */
+    private var boldFont: Typeface? = null
+
+    fun loadFont(context: Context) {
+        if (boldFont == null) {
+            boldFont = runCatching {
+                Typeface.createFromAsset(context.assets, "fonts/status-bold.otf")
+            }.getOrNull()
+        }
+    }
     private val COLORS = intArrayOf(Color.rgb(0, 0, 0), Color.rgb(85, 85, 85), Color.rgb(170, 170, 170), Color.WHITE)
 
     fun render(
@@ -25,24 +37,46 @@ object StatusRenderer {
         val canvas = Canvas(bmp)
         canvas.drawColor(COLORS[3])
 
-        val reg = Typeface.create("sans-serif", Typeface.NORMAL)
-        val bold = Typeface.create("sans-serif", Typeface.BOLD)
+        val bold = boldFont ?: Typeface.create("sans-serif", Typeface.BOLD)
         val pad = 18f
         val black = COLORS[0]
 
-        fun paint(size: Float, boldFace: Boolean = false, align: Paint.Align = Paint.Align.LEFT): Paint =
+        // 字重分三档：
+        //  Main  = 梁文峰/谷、金额：系统粗体（保持原字重）
+        //  Small = 余额/今日使用 标签：随包粗体 + 轻微补笔厚（墨屏可读）
+        //  Thin  = 顶部计费时段、峰谷窗口、底部刷新时间：系统常规（避免抢主内容焦点）
+        val systemBold = Typeface.create("sans-serif", Typeface.BOLD)
+        val systemRegular = Typeface.create("sans-serif", Typeface.NORMAL)
+
+        fun paint(size: Float, weight: String = "small", align: Paint.Align = Paint.Align.LEFT): Paint =
             Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = black
                 textSize = size
-                typeface = if (boldFace) bold else reg
                 textAlign = align
+                when (weight) {
+                    "main" -> {
+                        typeface = systemBold
+                        style = Paint.Style.FILL
+                    }
+                    "thin" -> {
+                        typeface = systemRegular
+                        style = Paint.Style.FILL
+                    }
+                    else -> {
+                        typeface = bold
+                        style = Paint.Style.FILL_AND_STROKE
+                        strokeWidth = (size * 0.018f).coerceIn(0.25f, 1.0f)
+                        strokeJoin = Paint.Join.ROUND
+                        strokeCap = Paint.Cap.ROUND
+                    }
+                }
             }
 
         // 第一行
-        canvas.drawText("DeepSeek 计费时段", pad, 18f + 15f, paint(15f))
+        canvas.drawText("DeepSeek 计费时段", pad, 18f + 15f, paint(15f, weight = "thin"))
         val name = if (peak) "梁文峰" else "梁文谷"
-        canvas.drawText(name, pad, 40f + 58f, paint(58f, boldFace = true))
-        canvas.drawText(windowText, WIDTH - pad, 22f + 14f, paint(14f, align = Paint.Align.RIGHT))
+        canvas.drawText(name, pad, 48f + 58f, paint(58f, weight = "main"))
+        canvas.drawText(windowText, WIDTH - pad, 22f + 14f, paint(14f, weight = "thin", align = Paint.Align.RIGHT))
 
         // 分隔线
         val linePaint = Paint().apply {
@@ -50,31 +84,31 @@ object StatusRenderer {
             strokeWidth = 1f
             isAntiAlias = true
         }
-        canvas.drawLine(pad, 118f, WIDTH - pad, 118f, linePaint)
+        canvas.drawLine(pad, 128f, WIDTH - pad, 128f, linePaint)
 
         // 第二行：余额
-        canvas.drawText("余额", pad, 140f + 21f, paint(21f))
+        canvas.drawText("余额", pad, 150f + 21f, paint(21f))
         canvas.drawText(
             String.format(java.util.Locale.US, "￥%.2f", balance),
-            WIDTH - pad, 134f + 34f, paint(34f, boldFace = true, align = Paint.Align.RIGHT)
+            WIDTH - pad, 144f + 34f, paint(34f, weight = "main", align = Paint.Align.RIGHT)
         )
 
         // 第三行：今日使用
-        canvas.drawText("今日使用", pad, 196f + 21f, paint(21f))
+        canvas.drawText("今日使用", pad, 206f + 21f, paint(21f))
         canvas.drawText(
             String.format(java.util.Locale.US, "￥%.2f", todayUsed),
-            WIDTH - pad, 190f + 34f, paint(34f, boldFace = true, align = Paint.Align.RIGHT)
+            WIDTH - pad, 200f + 34f, paint(34f, weight = "main", align = Paint.Align.RIGHT)
         )
 
         // 第四行：上次刷新（字号自适应）
         val footerText = "上次刷新 $refreshed"
-        var footerPaint = paint(15f)
+        var footerPaint = paint(15f, weight = "thin")
         for (size in listOf(15f, 14f, 13f, 12f, 11f, 10f)) {
-            footerPaint = paint(size, align = Paint.Align.CENTER)
+            footerPaint = paint(size, weight = "thin", align = Paint.Align.CENTER)
             if (footerPaint.measureText(footerText) <= WIDTH - pad * 2) break
         }
-        canvas.drawLine(pad, 246f, WIDTH - pad, 246f, linePaint)
-        canvas.drawText(footerText, WIDTH / 2f, 262f + 15f * 0.5f, footerPaint)
+        canvas.drawLine(pad, 252f, WIDTH - pad, 252f, linePaint)
+        canvas.drawText(footerText, WIDTH / 2f, 272f + footerPaint.textSize * 0.5f, footerPaint)
 
         return quantize4(bmp)
     }

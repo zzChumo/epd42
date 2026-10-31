@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -24,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -46,12 +48,77 @@ class LoopService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopLoop()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopLoop()
+                return START_NOT_STICKY
+            }
+            ACTION_PUSH_IMAGE -> {
+                startCustomPush(intent.getStringExtra(EXTRA_IMAGE_PATH))
+                return START_NOT_STICKY
+            }
         }
         startLoop()
         return START_STICKY
+    }
+
+    /** 自定义图像一次性发送：同样用前台服务 + 通知保活，发送完自动结束。 */
+    private fun startCustomPush(path: String?) {
+        if (path.isNullOrEmpty()) {
+            CustomPushStatus.running = false
+            CustomPushStatus.status = "图片路径无效"
+            stopSelf()
+            return
+        }
+        val notification = buildNotification("正在发送自定义图像…", "dsEPD42 自定义图像", withStopAction = false)
+        if (!startForegroundCompat(notification)) {
+            CustomPushStatus.running = false
+            CustomPushStatus.status = "前台服务启动失败"
+            stopSelf()
+            return
+        }
+        acquireWakeLock()
+        CustomPushStatus.running = true
+        CustomPushStatus.status = "正在发送自定义图像…"
+        scope.launch {
+            try {
+                val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(path) }
+                    ?: throw IllegalStateException("无法读取临时图片")
+                val planes = withContext(Dispatchers.Default) { StatusRenderer.toPlanes(bmp) }
+                val result = Epd42Ble.push(this@LoopService, planes.first, planes.second) { msg ->
+                    CustomPushStatus.status = msg
+                    notifyCustom(msg)
+                }
+                CustomPushStatus.status = "已发送：${result.deviceName}"
+                notifyCustom(CustomPushStatus.status)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                CustomPushStatus.status = "发送失败：${e.javaClass.simpleName}: ${e.message}"
+                notifyCustom(CustomPushStatus.status)
+            } finally {
+                CustomPushStatus.running = false
+                runCatching { java.io.File(path).delete() }
+                if (job?.isActive == true) {
+                    // 常驻循环同时还在跑：把前台通知恢复成循环状态，不要停服务
+                    runCatching { startForegroundCompat(buildNotification(lastStatus)) }
+                } else {
+                    releaseWakeLock()
+                    runCatching {
+                        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+                        else @Suppress("DEPRECATION") stopForeground(true)
+                    }
+                    stopSelf()
+                }
+            }
+        }
+    }
+
+    private fun notifyCustom(text: String) {
+        runCatching {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(NOTIF_ID, buildNotification(text, "dsEPD42 自定义图像", withStopAction = false))
+        }
     }
 
     private fun startLoop() {
@@ -180,7 +247,11 @@ class LoopService : Service() {
         }
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(
+        text: String,
+        title: String = "dsEPD42 常驻刷新",
+        withStopAction: Boolean = true,
+    ): Notification {
         val openIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
@@ -191,17 +262,17 @@ class LoopService : Service() {
             Intent(this, LoopService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("dsEPD42 常驻刷新")
+            .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(openIntent)
-            .addAction(0, "结束", stopIntent)
-            .build()
+        if (withStopAction) builder.addAction(0, "结束", stopIntent)
+        return builder.build()
     }
 
     private fun createChannel() {
@@ -267,9 +338,22 @@ class LoopService : Service() {
         const val CHANNEL_ID = "dsEPD42_loop"
         const val NOTIF_ID = 42
         const val ACTION_STOP = "app.chumo.epd42.STOP_LOOP"
+        const val ACTION_PUSH_IMAGE = "app.chumo.epd42.PUSH_IMAGE"
+        const val EXTRA_IMAGE_PATH = "image_path"
 
         fun start(context: Context) {
             val intent = Intent(context, LoopService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun pushImage(context: Context, path: String) {
+            val intent = Intent(context, LoopService::class.java)
+                .setAction(ACTION_PUSH_IMAGE)
+                .putExtra(EXTRA_IMAGE_PATH, path)
             if (Build.VERSION.SDK_INT >= 26) {
                 context.startForegroundService(intent)
             } else {

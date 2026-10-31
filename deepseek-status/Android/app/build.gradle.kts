@@ -22,8 +22,8 @@ android {
         applicationId = "app.chumo.epd42"
         minSdk = 28
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.2-Pre_Release"
+        versionCode = 32
+        versionName = "0.3-Alpha-1"
     }
 
     signingConfigs {
@@ -70,6 +70,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

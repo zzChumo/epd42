@@ -119,6 +119,7 @@ object RefreshEngine {
         }
 
         val stamp = LocalTime.stampNow() + " " + LocalTime.tzName()
+        withContext(Dispatchers.IO) { StatusRenderer.loadFont(context) }
         val bitmap = withContext(Dispatchers.Default) {
             StatusRenderer.render(balance, used, stamp, peak, window)
         }

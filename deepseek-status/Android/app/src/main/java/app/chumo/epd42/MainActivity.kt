@@ -5,6 +5,8 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -42,6 +44,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -50,6 +54,8 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -102,6 +108,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -149,6 +157,48 @@ private fun EpdApp() {
     var loopStartedAt by remember { mutableStateOf(0L) }
     var pendingLoop by remember { mutableStateOf(false) }
     var batteryPromptShown by remember { mutableStateOf(false) }
+
+    var selectedTab by remember { mutableStateOf(0) }
+    var customBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var customStatus by remember { mutableStateOf("") }
+    var customSending by remember { mutableStateOf(false) }
+
+    /** 读取图片并按“完整显示”规则等比缩放：宽调到 400 或高调到 300（先碰到边界者），居中放到 400×300 白底。 */
+    fun loadScaledBitmap(uri: Uri): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        val maxSide = max(bounds.outWidth, bounds.outHeight)
+        val sample = Integer.highestOneBit(max(1, (maxSide + 2047) / 2048))
+        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val src = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, decodeOpts) }
+            ?: throw IllegalStateException("无法读取所选图片")
+        val w = src.width
+        val h = src.height
+        val scale = min(400f / w, 300f / h)
+        val nw = (w * scale).roundToInt().coerceAtLeast(1)
+        val nh = (h * scale).roundToInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(src, nw, nh, true)
+        val out = Bitmap.createBitmap(400, 300, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(android.graphics.Color.WHITE)
+        canvas.drawBitmap(scaled, ((400 - nw) / 2).toFloat(), ((300 - nh) / 2).toFloat(), null)
+        return out
+    }
+
+    val pickImage = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    customBitmap = withContext(Dispatchers.IO) { loadScaledBitmap(uri) }
+                    customStatus = "已选择图片（已等比缩放适配 400×300）"
+                } catch (e: Exception) {
+                    customStatus = "读取图片失败：${e.javaClass.simpleName}: ${e.message}"
+                }
+            }
+        }
+    }
 
     var lastStorageReady by remember { mutableStateOf(false) }
     val reloadRef = remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -428,6 +478,56 @@ private fun EpdApp() {
         }
     }
 
+    /** 自定义图片发送：交给前台服务（通知保活，和主功能一致），界面轮询状态。 */
+    fun sendCustomImage() {
+        if (customSending) return
+        val bmp = customBitmap
+        if (bmp == null) {
+            scope.launch { snackbar.showSnackbar("请先选择图片") }
+            return
+        }
+        if (!btReady(context)) {
+            requestPermissions()
+            scope.launch { snackbar.showSnackbar("请先授予蓝牙权限并打开蓝牙") }
+            return
+        }
+        customSending = true
+        customStatus = "正在发送…"
+        CustomPushStatus.status = "正在发送…"
+        CustomPushStatus.running = true
+        scope.launch {
+            val path = withContext(Dispatchers.IO) {
+                runCatching {
+                    val file = File(context.cacheDir, "custom_push.png")
+                    file.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    file.absolutePath
+                }.getOrNull()
+            }
+            if (path == null) {
+                customStatus = "保存临时图片失败"
+                customSending = false
+                CustomPushStatus.running = false
+                return@launch
+            }
+            val started = runCatching { LoopService.pushImage(context, path) }
+            if (started.isFailure) {
+                customStatus = "启动发送服务失败：${started.exceptionOrNull()?.message}"
+                customSending = false
+                CustomPushStatus.running = false
+            }
+        }
+    }
+
+    // 自定义发送进行中：轮询服务状态，结束后复位按钮
+    LaunchedEffect(customSending) {
+        while (customSending) {
+            val s = CustomPushStatus.status
+            if (s.isNotEmpty() && s != customStatus) customStatus = s
+            if (!CustomPushStatus.running) customSending = false
+            delay(500L)
+        }
+    }
+
     MaterialTheme(colorScheme = colorScheme) {
         Scaffold(
             topBar = {
@@ -440,8 +540,33 @@ private fun EpdApp() {
                     }
                 )
             },
-            snackbarHost = { SnackbarHost(snackbar) }
+            snackbarHost = { SnackbarHost(snackbar) },
+            bottomBar = {
+                NavigationBar {
+                    NavigationBarItem(
+                        selected = selectedTab == 0,
+                        onClick = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                            selectedTab = 0
+                        },
+                        icon = { Icon(Icons.Filled.Home, contentDescription = "DeepSeek") },
+                        label = { Text("DeepSeek") }
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 1,
+                        onClick = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                            selectedTab = 1
+                        },
+                        icon = { Icon(Icons.Filled.Photo, contentDescription = "自定义图像") },
+                        label = { Text("自定义图像") }
+                    )
+                }
+            }
         ) { padding ->
+            if (selectedTab == 0) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -604,6 +729,16 @@ private fun EpdApp() {
                     )
                 }
             }
+            } else {
+                CustomImageTab(
+                    modifier = Modifier.padding(padding),
+                    status = customStatus,
+                    sending = customSending,
+                    bitmap = customBitmap,
+                    onPick = { pickImage.launch(arrayOf("image/png", "image/jpeg", "image/jpg")) },
+                    onSend = { sendCustomImage() },
+                )
+            }
         }
 
         if (showAbout) {
@@ -713,4 +848,65 @@ private fun requiredRuntimePermissions(): List<String> {
         list += Manifest.permission.POST_NOTIFICATIONS
     }
     return list
+}
+
+/** 「自定义图像」页：只有两个按钮（布局与首页一致），选择图片 + 发送到墨水屏。 */
+@Composable
+private fun CustomImageTab(
+    modifier: Modifier = Modifier,
+    status: String,
+    sending: Boolean,
+    bitmap: Bitmap?,
+    onPick: () -> Unit,
+    onSend: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(modifier)
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(Modifier.height(20.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            FilledTonalButton(
+                onClick = onPick,
+                enabled = !sending,
+                modifier = Modifier.weight(1f)
+            ) { Text("选择图像") }
+            Button(
+                onClick = onSend,
+                enabled = !sending,
+                modifier = Modifier.weight(1f)
+            ) { Text(if (sending) "发送中…" else "发送") }
+        }
+        if (status.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        bitmap?.let { bmp ->
+            Spacer(Modifier.height(16.dp))
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "自定义图像预览",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(400f / 300f)
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline,
+                        RoundedCornerShape(6.dp)
+                    )
+            )
+        }
+    }
 }

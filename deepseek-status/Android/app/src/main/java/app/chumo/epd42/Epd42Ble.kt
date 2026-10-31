@@ -70,10 +70,22 @@ object Epd42Ble {
             val session = GattSession(context, onLog)
             try {
                 val char = session.connectAndDiscover(device)
-                onLog("已连接，开始发送图像…")
+                // 4 灰阶 = 两个平面（0x10 / 0x13），每平面 ceil(15000/19)=790 块
+                val chunks10 = (plane10.size + CHUNK - 1) / CHUNK
+                val chunks13 = (plane13.size + CHUNK - 1) / CHUNK
+                val totalChunks = chunks10 + chunks13
+                var sentChunks = 0
+                val progressStep = max(1, totalChunks / 40)
+                fun reportProgress() {
+                    sentChunks++
+                    if (sentChunks == totalChunks || sentChunks % progressStep == 0) {
+                        onLog("已连接，开始发送图像… ($sentChunks/$totalChunks)")
+                    }
+                }
+                onLog("已连接，开始发送图像… (0/$totalChunks)")
                 session.writeCommand(CMD_INIT, byteArrayOf(DRIVER_EPD_4IN2.toByte()))
-                session.epdWrite(0x10, plane10)
-                session.epdWrite(0x13, plane13)
+                session.epdWrite(0x10, plane10, ::reportProgress)
+                session.epdWrite(0x13, plane13, ::reportProgress)
                 session.epdWrite(0x00, byteArrayOf(0x3F))
                 for ((addr, data) in StatusRenderer.LUT_4GRAY) session.epdWrite(addr, data)
                 session.writeCommand(CMD_DISPLAY, null)
@@ -212,12 +224,13 @@ object Epd42Ble {
             writeRaw(buf)
         }
 
-        suspend fun epdWrite(address: Int, data: ByteArray) {
+        suspend fun epdWrite(address: Int, data: ByteArray, onChunkSent: (() -> Unit)? = null) {
             writeCommand(CMD_SEND_CMD, byteArrayOf(address.toByte()))
             var i = 0
             while (i < data.size) {
                 val end = minOf(i + CHUNK, data.size)
                 writeCommand(CMD_SEND_DATA, data.copyOfRange(i, end))
+                onChunkSent?.invoke()
                 i = end
             }
         }

@@ -9,3 +9,9 @@ object LoopStatus {
     @Volatile var lastBitmap: Bitmap? = null
     const val INTERVAL_MS = 60_000L
 }
+
+/** 自定义图像「发送」任务的共享状态（前台服务写入，界面读取）。 */
+object CustomPushStatus {
+    @Volatile var running: Boolean = false
+    @Volatile var status: String = ""
+}
