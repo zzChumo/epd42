@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 
 SERVICE_UUID = "62750001-d828-918d-fb46-b6c11c675aec"
 CHAR_UUID = "62750002-d828-918d-fb46-b6c11c675aec"
@@ -27,6 +29,9 @@ DRIVER_EPD_4IN2 = 0x01       # 对应上位机下拉框里的 "01"
 
 MAX_PACKET = 20
 CHUNK = MAX_PACKET - 1       # 19
+
+# 记录上次成功连接的设备 MAC：之后直接连，避免每分钟重复扫描
+_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dsble.json")
 
 # 4 级灰阶 LUT（与上位机 send4GrayLut 一致）
 LUT_4GRAY = [
@@ -96,32 +101,87 @@ class Epd42Ble:
         self.packet_delay = packet_delay
         self.client = None
         self.char = None
+        self._cached_address = self._load_cached_address()
+
+    # ── 设备地址缓存（减少反复扫描，降低蓝牙协议栈压力）──
+    def _load_cached_address(self):
+        try:
+            with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("address")
+        except Exception:
+            return None
+
+    def _save_cached_address(self, address):
+        try:
+            with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"address": address}, f)
+            self._cached_address = address
+        except Exception:
+            pass
+
+    def _clear_cached_address(self):
+        try:
+            os.remove(_CACHE_FILE)
+        except Exception:
+            pass
+        self._cached_address = None
 
     async def connect(self):
         from bleak import BleakClient, BleakScanner  # 延迟导入，便于无蓝牙环境使用 --transport none
 
-        if self.address:
-            print(f"[BLE] 直连 MAC {self.address}")
-            self.client = BleakClient(self.address)
-        else:
-            print(f"[BLE] 扫描设备（名称前缀 {self.name_prefix}）…")
-            device = None
-            # bleak 各版本扫描 API 有差异，统一用 discover() 再自己筛选
+        # 1) 先尝试直连：显式 --device-address 优先，其次上次成功连接的缓存地址（不扫描）
+        direct = self.address or self._cached_address
+        if direct:
             try:
-                found = await BleakScanner.discover(timeout=self.scan_timeout)
-            except TypeError:
-                found = await BleakScanner.discover(self.scan_timeout)
-            for d in found or []:
-                if (d.name or "").startswith(self.name_prefix):
-                    device = d
-                    break
-            if device is None:
-                raise RuntimeError(
-                    f"未找到名称以 {self.name_prefix} 开头的设备"
-                    "（设备可能已休眠，请用 NFC/无线充唤醒）"
-                )
-            print(f"[BLE] 连接 {device.name} ({device.address})")
-            self.client = BleakClient(device)
+                print(f"[BLE] 直连 MAC {direct}（跳过扫描）")
+                self.client = BleakClient(direct)
+                await self.client.connect()
+                services = getattr(self.client, "services", None)
+                self.char = _find_char(services, CHAR_UUID)
+                if self.char is None and hasattr(self.client, "get_services"):
+                    try:
+                        services = await self.client.get_services()
+                    except Exception:
+                        services = getattr(self.client, "services", None)
+                    self.char = _find_char(services, CHAR_UUID)
+                if self.char is None:
+                    raise RuntimeError("直连成功但未找到 EPD 特征值")
+                await self.client.start_notify(self.char, lambda _c, data: None)
+                self._save_cached_address(direct)
+                print("[BLE] 已连接（直连）")
+                return self
+            except Exception as e:
+                print(f"[BLE] 直连失败：{type(e).__name__}: {e}，改为扫描")
+                try:
+                    if self.client is not None:
+                        await self.client.disconnect()
+                except Exception:
+                    pass
+                self.client = None
+                self.char = None
+                if not self.address:
+                    self._clear_cached_address()
+
+        # 2) 没有可用地址时才扫描（首次运行/缓存失效）
+        print(f"[BLE] 扫描设备（名称前缀 {self.name_prefix}）…")
+        device = None
+        # bleak 各版本扫描 API 有差异，统一用 discover() 再自己筛选
+        try:
+            found = await BleakScanner.discover(timeout=self.scan_timeout)
+        except TypeError:
+            found = await BleakScanner.discover(self.scan_timeout)
+        for d in found or []:
+            if (d.name or "").startswith(self.name_prefix):
+                device = d
+                break
+        if device is None:
+            raise RuntimeError(
+                f"未找到名称以 {self.name_prefix} 开头的设备"
+                "（设备可能已休眠，请用 NFC/无线充唤醒）"
+            )
+        print(f"[BLE] 连接 {device.name} ({device.address})")
+        self.client = BleakClient(device)
         await self.client.connect()
 
         # bleak 不同版本获取 services 的方式不同，统一走兼容函数
@@ -141,6 +201,11 @@ class Epd42Ble:
                     print(f"    char {getattr(ch, 'uuid', '?')} props={getattr(ch, 'properties', '?')}")
             raise RuntimeError("未找到 EPD 特征值，请确认固件/服务 UUID")
         await self.client.start_notify(self.char, lambda _c, data: None)
+        # 记录本次成功的 MAC，下次直接连、不再扫描
+        try:
+            self._save_cached_address(self.client.address)
+        except Exception:
+            pass
         print("[BLE] 已连接")
         return self
 

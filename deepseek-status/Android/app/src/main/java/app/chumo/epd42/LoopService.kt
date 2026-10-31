@@ -48,6 +48,13 @@ class LoopService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 系统因 START_STICKY 重启服务时 intent 为 null：只有用户仍希望常驻时才恢复
+        if (intent == null && !isLoopRequested()) {
+            LoopStatus.running = false
+            LoopStatus.status = "常驻刷新已停止"
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_STOP -> {
                 stopLoop()
@@ -122,6 +129,7 @@ class LoopService : Service() {
     }
 
     private fun startLoop() {
+        setLoopRequested(true)
         if (job?.isActive == true) {
             // already running: make sure we are still foreground and refresh the notification
             runCatching { startForegroundCompat(buildNotification(lastStatus)) }
@@ -275,6 +283,14 @@ class LoopService : Service() {
         return builder.build()
     }
 
+    private fun isLoopRequested(): Boolean =
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_LOOP_REQUESTED, false)
+
+    private fun setLoopRequested(value: Boolean) {
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_LOOP_REQUESTED, value).apply()
+    }
+
     private fun createChannel() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
@@ -311,6 +327,7 @@ class LoopService : Service() {
     }
 
     private fun stopLoop() {
+        setLoopRequested(false)
         job?.cancel()
         job = null
         LoopStatus.running = false
@@ -339,6 +356,8 @@ class LoopService : Service() {
         const val NOTIF_ID = 42
         const val ACTION_STOP = "app.chumo.epd42.STOP_LOOP"
         const val ACTION_PUSH_IMAGE = "app.chumo.epd42.PUSH_IMAGE"
+        const val PREFS = "epd42_loop"
+        const val KEY_LOOP_REQUESTED = "loop_requested"
         const val EXTRA_IMAGE_PATH = "image_path"
 
         fun start(context: Context) {

@@ -281,6 +281,11 @@ private fun EpdApp() {
         looping = LoopStatus.running
     }
 
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        // 退到后台时丢弃「排队中的常态刷新」，避免后台被自动拉起
+        pendingLoop = false
+    }
+
     val snapshot = Snapshot(apiKey, localUsed, userToken, mode)
     val saveEnabled = snapshot != savedSnapshot && !running
 
@@ -463,18 +468,12 @@ private fun EpdApp() {
             if (s.isNotEmpty() && s != status) status = s
             LoopStatus.lastBitmap?.let { bmp -> if (bmp !== preview) preview = bmp }
 
-            // 常驻服务没起来/被系统掐掉：自动重试拉起（不退出循环）
+            // 只同步状态，不再自动重启服务（避免后台被自动拉起）
             if (!LoopStatus.running && System.currentTimeMillis() - loopStartedAt > 3_000L) {
-                loopStartedAt = System.currentTimeMillis()
-                val retried = runCatching {
-                    LoopStatus.running = true
-                    LoopService.start(context)
-                }
-                if (retried.isFailure) {
-                    status = "常驻服务未运行，正在重试…（建议允许后台运行/忽略电池优化）"
-                }
+                looping = false
+                status = "常驻刷新已停止（前台服务未运行）"
             }
-            delay(3_000L)
+            delay(1_500L)
         }
     }
 

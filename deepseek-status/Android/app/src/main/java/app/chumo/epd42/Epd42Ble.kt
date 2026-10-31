@@ -42,6 +42,9 @@ object Epd42Ble {
     private const val CHUNK = 19
     private const val DRIVER_EPD_4IN2 = 0x01
 
+    private const val PREFS_NAME = "epd42_ble"
+    private const val KEY_ADDRESS = "last_address"
+
     data class PushResult(val deviceName: String, val deviceAddress: String, val rssi: Int)
 
     @SuppressLint("MissingPermission")
@@ -56,20 +59,64 @@ object Epd42Ble {
         val adapter: BluetoothAdapter = manager.adapter ?: throw IllegalStateException("设备不支持蓝牙")
         if (!adapter.isEnabled) throw IllegalStateException("蓝牙未开启")
 
-        onLog("扫描蓝牙设备（前缀 $namePrefix）…")
-        val candidates = scan(adapter, namePrefix, onLog)
-        if (candidates.isEmpty()) throw IllegalStateException("未找到名称以 $namePrefix 开头的设备")
-        val maxRssi = candidates.maxOf { it.second }
-        val top = candidates.filter { it.second == maxRssi }
-        val chosen = top[Random.nextInt(top.size)]
-        val device = chosen.first
-        val rssi = chosen.second
-        onLog("选择设备：${device.name ?: "(无名)"} (${device.address}) RSSI=$rssi")
+        // 记住上次成功连接的设备，之后直接连、不再反复扫描（降低协议栈压力）
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        var device: BluetoothDevice? = null
+        var rssi = 0
+        val cachedAddress = prefs.getString(KEY_ADDRESS, null)
+        if (cachedAddress != null) {
+            try {
+                val d = adapter.getRemoteDevice(cachedAddress)
+                onLog("尝试直连已记住的设备 ${d.name ?: cachedAddress}（跳过扫描）…")
+                device = d
+            } catch (e: Exception) {
+                onLog("记住的地址无效：${e.message}，重新扫描")
+                prefs.edit().remove(KEY_ADDRESS).apply()
+            }
+        }
+        if (device == null) {
+            onLog("扫描蓝牙设备（前缀 $namePrefix）…")
+            val candidates = scan(adapter, namePrefix, onLog)
+            if (candidates.isEmpty()) throw IllegalStateException("未找到名称以 $namePrefix 开头的设备")
+            val maxRssi = candidates.maxOf { it.second }
+            val top = candidates.filter { it.second == maxRssi }
+            val chosen = top[Random.nextInt(top.size)]
+            device = chosen.first
+            rssi = chosen.second
+            onLog("选择设备：${device.name ?: "(无名)"} (${device.address}) RSSI=$rssi")
+        }
+        val target = device!!
+        val deviceLabel = try { target.name } catch (e: SecurityException) { null } ?: cachedAddress ?: "(无名)"
+        // 直连失败（设备不在、休眠）时自动回退扫描
+        var session = GattSession(context, onLog)
+        var connectedDevice: BluetoothDevice = target
+        try {
+            session.connectAndDiscover(connectedDevice)
+        } catch (e: Exception) {
+            if (cachedAddress != null) {
+                onLog("直连失败（${e.javaClass.simpleName}），改为扫描查找…")
+                prefs.edit().remove(KEY_ADDRESS).apply()
+                session.close()
+                onLog("扫描蓝牙设备（前缀 $namePrefix）…")
+                val candidates = scan(adapter, namePrefix, onLog)
+                if (candidates.isEmpty()) throw IllegalStateException("未找到名称以 $namePrefix 开头的设备")
+                val maxRssi = candidates.maxOf { it.second }
+                val top = candidates.filter { it.second == maxRssi }
+                val chosen = top[Random.nextInt(top.size)]
+                connectedDevice = chosen.first
+                rssi = chosen.second
+                session = GattSession(context, onLog)
+                session.connectAndDiscover(connectedDevice)
+            } else {
+                throw e
+            }
+        }
+        // 记录本次成功的设备地址
+        prefs.edit().putString(KEY_ADDRESS, connectedDevice.address).apply()
+        onLog("已连接：${try { connectedDevice.name } catch (e: SecurityException) { null } ?: connectedDevice.address}")
 
         withTimeout(300_000) {
-            val session = GattSession(context, onLog)
             try {
-                val char = session.connectAndDiscover(device)
                 // 4 灰阶 = 两个平面（0x10 / 0x13），每平面 ceil(15000/19)=790 块
                 val chunks10 = (plane10.size + CHUNK - 1) / CHUNK
                 val chunks13 = (plane13.size + CHUNK - 1) / CHUNK
@@ -96,7 +143,7 @@ object Epd42Ble {
             }
         }
         onLog("推送完成")
-        PushResult(device.name ?: "(无名)", device.address, rssi)
+        PushResult(deviceLabel, connectedDevice.address, rssi)
     }
 
     @SuppressLint("MissingPermission")
@@ -123,7 +170,7 @@ object Epd42Ble {
             }
         }
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
             .build()
         try {
             scanner.startScan(null, settings, callback)
@@ -131,6 +178,14 @@ object Epd42Ble {
             onLog("缺少蓝牙扫描权限：${e.message}")
             if (cont.isActive) cont.resume(emptyList())
             return@suspendCancellableCoroutine
+        } catch (e: Exception) {
+            onLog("启动扫描失败：${e.javaClass.simpleName}: ${e.message}")
+            if (cont.isActive) cont.resume(emptyList())
+            return@suspendCancellableCoroutine
+        }
+        // 协程被取消时也要停止扫描，避免扫描器注册泄漏导致后续扫不到设备
+        cont.invokeOnCancellation {
+            runCatching { scanner.stopScan(callback) }
         }
         Handler(Looper.getMainLooper()).postDelayed({
             try { scanner.stopScan(callback) } catch (_: Exception) {}
