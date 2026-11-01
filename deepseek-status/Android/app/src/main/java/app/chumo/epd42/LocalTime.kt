@@ -6,9 +6,42 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-/** 时间与时区工具：峰谷判断固定按北京时间，展示时间跟随系统时区。 */
+/**
+ * 时间与时区工具。
+ * 峰谷规则：星期/节假日按北京日期，时段按 UTC 时刻；展示时间跟随系统时区。
+ *   峰时：UTC 01:00–04:00 与 06:00–10:00，周一至周五（北京日期），不含中国法定节假日
+ *   谷时：周六、周日全天；法定节假日全天；其余时间
+ */
 object LocalTime {
     private val BEIJING = TimeZone.getTimeZone("Asia/Shanghai")
+    private val UTC = TimeZone.getTimeZone("UTC")
+
+    /** 峰时段（UTC）：[sh, sm] 到 [eh, em]。 */
+    private val PEAK_WINDOWS_UTC = listOf(
+        intArrayOf(1, 0, 4, 0),
+        intArrayOf(6, 0, 10, 0),
+    )
+
+    /** 中国法定节假日（放假日期；调休上班的周末不算，周六日本身就是谷时）。 */
+    private val HOLIDAYS: Map<Int, List<String>> = mapOf(
+        2025 to listOf(
+            "01-01",
+            "01-28", "01-29", "01-30", "01-31", "02-01", "02-02", "02-03", "02-04",
+            "04-04", "04-05", "04-06",
+            "05-01", "05-02", "05-03", "05-04", "05-05",
+            "05-31", "06-01", "06-02",
+            "10-01", "10-02", "10-03", "10-04", "10-05", "10-06", "10-07", "10-08",
+        ),
+        2026 to listOf(
+            "01-01", "01-02", "01-03",
+            "02-15", "02-16", "02-17", "02-18", "02-19", "02-20", "02-21", "02-22", "02-23",
+            "04-04", "04-05", "04-06",
+            "05-01", "05-02", "05-03", "05-04", "05-05",
+            "06-19", "06-20", "06-21",
+            "09-25", "09-26", "09-27",
+            "10-01", "10-02", "10-03", "10-04", "10-05", "10-06", "10-07",
+        ),
+    )
 
     /** 系统时区的 IANA 名称，如 Asia/Shanghai。 */
     fun tzName(): String = TimeZone.getDefault().id ?: "Local"
@@ -17,30 +50,39 @@ object LocalTime {
 
     fun nowBeijing(): Calendar = Calendar.getInstance(BEIJING).apply { time = Date() }
 
-    /** 是否谷时：北京时间 00:30–08:30。 */
-    fun isOffpeak(): Boolean {
-        val c = nowBeijing()
-        val minutes = c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE)
-        return minutes >= 30 && minutes < 8 * 60 + 30
+    /** 是否谷时（用当前 UTC 时刻判断）。 */
+    fun isOffpeak(): Boolean = isOffpeakAt(Calendar.getInstance(UTC))
+
+    fun isOffpeakAt(nowUtc: Calendar): Boolean {
+        val bj = Calendar.getInstance(BEIJING).apply { timeInMillis = nowUtc.timeInMillis }
+        val dow = bj.get(Calendar.DAY_OF_WEEK)
+        if (dow == Calendar.SATURDAY || dow == Calendar.SUNDAY) return true
+        val md = String.format(
+            Locale.US, "%02d-%02d",
+            bj.get(Calendar.MONTH) + 1, bj.get(Calendar.DAY_OF_MONTH)
+        )
+        if (HOLIDAYS[bj.get(Calendar.YEAR)]?.contains(md) == true) return true
+        val hm = nowUtc.get(Calendar.HOUR_OF_DAY) * 60 + nowUtc.get(Calendar.MINUTE)
+        for (w in PEAK_WINDOWS_UTC) {
+            val start = w[0] * 60 + w[1]
+            val end = w[2] * 60 + w[3]
+            if (hm >= start && hm < end) return false   // 峰时
+        }
+        return true
     }
 
-    /** 把北京时间的峰/谷时段换算成系统本地时间显示，例如「峰时 09:30–01:30」。 */
+    /** 右上角时段文案：峰时显示各时段换算到系统本地时区的钟点；谷时显示 00:00-24:00。 */
     fun windowTextLocal(peak: Boolean): String {
-        val now = System.currentTimeMillis()
-        val bjOffset = BEIJING.getOffset(now)
-        val localOffset = TimeZone.getDefault().getOffset(now)
-        val shiftMinutes = (localOffset - bjOffset) / 60000
+        if (!peak) return "谷时 00:00-24:00"
+        val shiftMinutes = localOffsetSec() / 60
         fun fmt(hour: Int, minute: Int): String {
             var total = ((hour * 60 + minute + shiftMinutes) % 1440 + 1440) % 1440
-            val h = total / 60
-            val m = total % 60
-            return String.format(Locale.US, "%02d:%02d", h, m)
+            return String.format(Locale.US, "%02d:%02d", total / 60, total % 60)
         }
-        return if (peak) {
-            "峰时 ${fmt(8, 30)}–${fmt(0, 30)}"
-        } else {
-            "谷时 ${fmt(0, 30)}–${fmt(8, 30)}"
+        val parts = PEAK_WINDOWS_UTC.map { w ->
+            "${fmt(w[0], w[1])}-${fmt(w[2], w[3])}"
         }
+        return "峰时 " + parts.joinToString(", ")
     }
 
     fun stampNow(): String =
