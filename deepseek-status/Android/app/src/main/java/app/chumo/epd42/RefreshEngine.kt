@@ -19,8 +19,9 @@ object RefreshEngine {
     )
 
     /**
-     * 计算今日使用量（与 dsstore.json / CLI 语义一致）：
-     * 本地模式：输入值作为基线，之后按余额下降累加；输入为空则沿用 dsstore 记录。
+     * 计算今日使用量（与桌面脚本 dsstore.json 语义一致）：
+     * 本地模式：跨天后的第一次刷新以「当前余额」为起点重新开始（用量归 0，不沿用旧记录/旧输入）；
+     *          当天内按余额下降累加，余额上升视为充值、不计入用量；用户手动输入的基线仅当天有效。
      * userToken 模式：优先平台真实消费。
      */
     fun computeTodayUsed(
@@ -49,14 +50,14 @@ object RefreshEngine {
 
         val entered = localUsedText.trim().toDoubleOrNull()
         val used: Double = when {
-            !sameDay -> entered ?: 0.0
-            entered == null -> {
-                val lastBalance = state!!.lastBalance ?: balance
-                state.todayUsed + max(0.0, lastBalance - balance)
-            }
-            kotlin.math.abs(state!!.todayUsed - entered) > 1e-9 -> entered
+            // 当天第一次刷新（跨天）：以「当前余额」作为起点，用量从 0 开始，
+            // 不再以上一次保存的余额/用量记录作为起点（否则充值后会把差额算进用量）。
+            !sameDay -> if (state == null) (entered ?: 0.0) else 0.0
+            // 用户手动填写的基线：仅当天有效
+            entered != null && kotlin.math.abs(state!!.todayUsed - entered) > 1e-9 -> entered
+            // 当天内：余额下降才累加，余额上升（充值）不计入
             else -> {
-                val lastBalance = state.lastBalance ?: balance
+                val lastBalance = state!!.lastBalance ?: balance
                 state.todayUsed + max(0.0, lastBalance - balance)
             }
         }

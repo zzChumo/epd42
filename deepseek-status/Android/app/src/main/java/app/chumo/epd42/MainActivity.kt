@@ -354,6 +354,8 @@ private fun EpdApp() {
             status = "余额与用量均未变化，跳过刷屏"
         } else {
             rendered.bitmap?.let { preview = it }
+            // 本地模式：把计算后的今日使用量同步回输入框，避免旧输入反复覆盖累计结果
+            if (currentMode == 0) localUsed = formatUsedForInput(rendered.used)
             status = "已推送：${rendered.deviceName}（余额 ￥${
                 String.format(java.util.Locale.US, "%.2f", rendered.balance)
             } / 今日使用 ￥${

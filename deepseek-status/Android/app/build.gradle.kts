@@ -22,8 +22,8 @@ android {
         applicationId = "app.chumo.epd42"
         minSdk = 28
         targetSdk = 36
-        versionCode = 36
-        versionName = "0.3-Alpha-4"
+        versionCode = 37
+        versionName = "0.3-Beta"
     }
 
     signingConfigs {
