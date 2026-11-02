@@ -42,14 +42,19 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +65,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBar
@@ -77,6 +83,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -159,7 +166,10 @@ private fun EpdApp() {
     var batteryPromptShown by remember { mutableStateOf(false) }
 
     var selectedTab by remember { mutableStateOf(0) }
+    var developerMode by remember { mutableStateOf(SettingsStore.isDeveloperMode(context)) }
+    var ditherMode by remember { mutableStateOf(SettingsStore.ditherMode(context)) }
     var customBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var customPreview by remember { mutableStateOf<Bitmap?>(null) }
     var customStatus by remember { mutableStateOf("") }
     var customSending by remember { mutableStateOf(false) }
 
@@ -191,7 +201,11 @@ private fun EpdApp() {
         if (uri != null) {
             scope.launch {
                 try {
-                    customBitmap = withContext(Dispatchers.IO) { loadScaledBitmap(uri) }
+                    val scaled = withContext(Dispatchers.IO) { loadScaledBitmap(uri) }
+                    customBitmap = scaled
+                    customPreview = withContext(Dispatchers.Default) {
+                        Dither.build(scaled, SettingsStore.effectiveDitherMode(context)).preview
+                    }
                     customStatus = "已选择图片（已等比缩放适配 400×300）"
                 } catch (e: Exception) {
                     customStatus = "读取图片失败：${e.javaClass.simpleName}: ${e.message}"
@@ -517,6 +531,15 @@ private fun EpdApp() {
         }
     }
 
+    // 开发者模式 / 取模算法变化时，重新生成自定义页预览
+    LaunchedEffect(developerMode, ditherMode, customBitmap) {
+        customBitmap?.let { bmp ->
+            customPreview = withContext(Dispatchers.Default) {
+                Dither.build(bmp, SettingsStore.effectiveDitherMode(context)).preview
+            }
+        }
+    }
+
     // 自定义发送进行中：轮询服务状态，结束后复位按钮
     LaunchedEffect(customSending) {
         while (customSending) {
@@ -561,6 +584,16 @@ private fun EpdApp() {
                         },
                         icon = { Icon(Icons.Filled.Photo, contentDescription = "自定义图像") },
                         label = { Text("自定义图像") }
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 2,
+                        onClick = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                            selectedTab = 2
+                        },
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = "设置") },
+                        label = { Text("设置") }
                     )
                 }
             }
@@ -728,14 +761,28 @@ private fun EpdApp() {
                     )
                 }
             }
-            } else {
+            } else if (selectedTab == 1) {
                 CustomImageTab(
                     modifier = Modifier.padding(padding),
                     status = customStatus,
                     sending = customSending,
-                    bitmap = customBitmap,
+                    bitmap = customPreview ?: customBitmap,
                     onPick = { pickImage.launch(arrayOf("image/png", "image/jpeg", "image/jpg")) },
                     onSend = { sendCustomImage() },
+                )
+            } else {
+                SettingsTab(
+                    modifier = Modifier.padding(padding),
+                    developerMode = developerMode,
+                    ditherMode = ditherMode,
+                    onDeveloperModeChange = {
+                        developerMode = it
+                        SettingsStore.setDeveloperMode(context, it)
+                    },
+                    onDitherModeChange = {
+                        ditherMode = it
+                        SettingsStore.setDitherMode(context, it)
+                    },
                 )
             }
         }
@@ -906,6 +953,90 @@ private fun CustomImageTab(
                         RoundedCornerShape(6.dp)
                     )
             )
+        }
+    }
+}
+
+/** 「设置」页：开发者模式开关；其下的设置项随开关状态显示/隐藏。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsTab(
+    modifier: Modifier = Modifier,
+    developerMode: Boolean,
+    ditherMode: String,
+    onDeveloperModeChange: (Boolean) -> Unit,
+    onDitherModeChange: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(modifier)
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("开发者模式", style = MaterialTheme.typography.bodyLarge)
+            Switch(
+                checked = developerMode,
+                onCheckedChange = onDeveloperModeChange
+            )
+        }
+
+        // 展开与收回都用 Material 原生默认过渡（fade + 垂直展开/收起）
+        AnimatedVisibility(visible = developerMode) {
+            Column {
+                Spacer(Modifier.height(16.dp))
+                val focusManager = LocalFocusManager.current
+                var expanded by remember { mutableStateOf(false) }
+                val options = listOf(
+                    "none" to "二值化",
+                    "bayer" to "bayer",
+                    "floydsteinberg" to "floydsteinberg",
+                    "Atkinson" to "Atkinson",
+                    "4gray" to "四阶灰度",
+                )
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = {
+                        expanded = it
+                        if (!it) focusManager.clearFocus()
+                    }
+                ) {
+                    TextField(
+                        value = options.firstOrNull { it.first == ditherMode }?.second ?: "四阶灰度",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("取模算法") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth()
+                            .onFocusChanged { state ->
+                                // 失焦后回到最初未点击的状态（收起菜单）
+                                if (!state.isFocused) expanded = false
+                            }
+                    )
+                    ExposedDropdownMenu(expanded = expanded, onDismissRequest = {
+                        expanded = false
+                        focusManager.clearFocus()
+                    }) {
+                        options.forEach { (key, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    onDitherModeChange(key)
+                                    expanded = false
+                                    focusManager.clearFocus()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

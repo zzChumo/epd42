@@ -47,11 +47,19 @@ object Epd42Ble {
 
     data class PushResult(val deviceName: String, val deviceAddress: String, val rssi: Int)
 
+    private data class SessionTarget(
+        val session: GattSession,
+        val device: BluetoothDevice,
+        val rssi: Int,
+        val label: String,
+    )
+
+    private fun chunks(data: ByteArray): Int = (data.size + CHUNK - 1) / CHUNK
+
     @SuppressLint("MissingPermission")
     suspend fun push(
         context: Context,
-        plane10: ByteArray,
-        plane13: ByteArray,
+        payload: Dither.Payload,
         namePrefix: String = "NRF_EPD_",
         onLog: (String) -> Unit = {},
     ): PushResult = withContext(Dispatchers.IO) {
@@ -59,7 +67,65 @@ object Epd42Ble {
         val adapter: BluetoothAdapter = manager.adapter ?: throw IllegalStateException("设备不支持蓝牙")
         if (!adapter.isEnabled) throw IllegalStateException("蓝牙未开启")
 
-        // 记住上次成功连接的设备，之后直接连、不再反复扫描（降低协议栈压力）
+        val target = openSession(context, adapter, namePrefix, onLog)
+        withTimeout(300_000) {
+            try {
+                val session = target.session
+                session.writeCommand(CMD_INIT, byteArrayOf(DRIVER_EPD_4IN2.toByte()))
+                if (payload.mode == Dither.MODE_4GRAY) {
+                    // 4 级灰度：双平面 0x10 / 0x13 + 4gray LUT + DISPLAY
+                    val plane10 = payload.plane10 ?: throw IllegalStateException("缺少 0x10 平面")
+                    val plane13 = payload.plane13 ?: throw IllegalStateException("缺少 0x13 平面")
+                    val totalChunks = chunks(plane10) + chunks(plane13)
+                    var sentChunks = 0
+                    val progressStep = max(1, totalChunks / 40)
+                    fun reportProgress() {
+                        sentChunks++
+                        if (sentChunks == totalChunks || sentChunks % progressStep == 0) {
+                            onLog("已连接，开始发送图像… ($sentChunks/$totalChunks)")
+                        }
+                    }
+                    onLog("已连接，开始发送图像… (0/$totalChunks)")
+                    session.epdWrite(0x10, plane10, ::reportProgress)
+                    session.epdWrite(0x13, plane13, ::reportProgress)
+                    session.epdWrite(0x00, byteArrayOf(0x3F))
+                    for ((addr, data) in StatusRenderer.LUT_4GRAY) session.epdWrite(addr, data)
+                    session.writeCommand(CMD_DISPLAY, null)
+                    session.epdWrite(0x00, byteArrayOf(0x1F))
+                } else {
+                    // 黑白（二值化 / bayer / floydsteinberg / Atkinson）：
+                    // 与网页上位机一致——单缓冲写 0x13，直接 DISPLAY，不加载 4gray LUT
+                    val bw = payload.bw ?: throw IllegalStateException("缺少黑白缓冲")
+                    val totalChunks = chunks(bw)
+                    var sentChunks = 0
+                    val progressStep = max(1, totalChunks / 40)
+                    fun reportProgress() {
+                        sentChunks++
+                        if (sentChunks == totalChunks || sentChunks % progressStep == 0) {
+                            onLog("已连接，开始发送图像… ($sentChunks/$totalChunks)")
+                        }
+                    }
+                    onLog("已连接，开始发送图像… (0/$totalChunks)")
+                    session.epdWrite(0x13, bw, ::reportProgress)
+                    session.writeCommand(CMD_DISPLAY, null)
+                }
+                onLog("刷新指令已发送")
+            } finally {
+                target.session.close()
+            }
+        }
+        onLog("推送完成")
+        PushResult(target.label, target.device.address, target.rssi)
+    }
+
+    /** 选择设备并连接：优先记住的 MAC 直连，失败回退扫描；成功后缓存地址。 */
+    @SuppressLint("MissingPermission")
+    private suspend fun openSession(
+        context: Context,
+        adapter: BluetoothAdapter,
+        namePrefix: String,
+        onLog: (String) -> Unit,
+    ): SessionTarget {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         var device: BluetoothDevice? = null
         var rssi = 0
@@ -86,8 +152,7 @@ object Epd42Ble {
             onLog("选择设备：${device.name ?: "(无名)"} (${device.address}) RSSI=$rssi")
         }
         val target = device!!
-        val deviceLabel = try { target.name } catch (e: SecurityException) { null } ?: cachedAddress ?: "(无名)"
-        // 直连失败（设备不在、休眠）时自动回退扫描
+        val label = try { target.name } catch (e: SecurityException) { null } ?: cachedAddress ?: "(无名)"
         var session = GattSession(context, onLog)
         var connectedDevice: BluetoothDevice = target
         try {
@@ -111,39 +176,9 @@ object Epd42Ble {
                 throw e
             }
         }
-        // 记录本次成功的设备地址
         prefs.edit().putString(KEY_ADDRESS, connectedDevice.address).apply()
         onLog("已连接：${try { connectedDevice.name } catch (e: SecurityException) { null } ?: connectedDevice.address}")
-
-        withTimeout(300_000) {
-            try {
-                // 4 灰阶 = 两个平面（0x10 / 0x13），每平面 ceil(15000/19)=790 块
-                val chunks10 = (plane10.size + CHUNK - 1) / CHUNK
-                val chunks13 = (plane13.size + CHUNK - 1) / CHUNK
-                val totalChunks = chunks10 + chunks13
-                var sentChunks = 0
-                val progressStep = max(1, totalChunks / 40)
-                fun reportProgress() {
-                    sentChunks++
-                    if (sentChunks == totalChunks || sentChunks % progressStep == 0) {
-                        onLog("已连接，开始发送图像… ($sentChunks/$totalChunks)")
-                    }
-                }
-                onLog("已连接，开始发送图像… (0/$totalChunks)")
-                session.writeCommand(CMD_INIT, byteArrayOf(DRIVER_EPD_4IN2.toByte()))
-                session.epdWrite(0x10, plane10, ::reportProgress)
-                session.epdWrite(0x13, plane13, ::reportProgress)
-                session.epdWrite(0x00, byteArrayOf(0x3F))
-                for ((addr, data) in StatusRenderer.LUT_4GRAY) session.epdWrite(addr, data)
-                session.writeCommand(CMD_DISPLAY, null)
-                session.epdWrite(0x00, byteArrayOf(0x1F))
-                onLog("刷新指令已发送")
-            } finally {
-                session.close()
-            }
-        }
-        onLog("推送完成")
-        PushResult(deviceLabel, connectedDevice.address, rssi)
+        return SessionTarget(session, connectedDevice, rssi, label)
     }
 
     @SuppressLint("MissingPermission")

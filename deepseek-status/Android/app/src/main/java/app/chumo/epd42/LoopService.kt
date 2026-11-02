@@ -91,8 +91,9 @@ class LoopService : Service() {
             try {
                 val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(path) }
                     ?: throw IllegalStateException("无法读取临时图片")
-                val planes = withContext(Dispatchers.Default) { StatusRenderer.toPlanes(bmp) }
-                val result = Epd42Ble.push(this@LoopService, planes.first, planes.second) { msg ->
+                val mode = SettingsStore.effectiveDitherMode(this@LoopService)
+                val payload = withContext(Dispatchers.Default) { Dither.build(bmp, mode) }
+                val result = Epd42Ble.push(this@LoopService, payload) { msg ->
                     CustomPushStatus.status = msg
                     notifyCustom(msg)
                 }

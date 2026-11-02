@@ -106,12 +106,14 @@ object RefreshEngine {
             computeTodayUsed(mode, localUsedText, userTokenText, balance)
         }
 
-        // 余额与今日使用量都没变 → 跳过刷屏（与桌面 CLI 行为一致）
+        // 余额、用量、取模算法都没变 → 跳过刷屏（与桌面 CLI 行为一致）
+        val effectiveMode = SettingsStore.effectiveDitherMode(context)
         if (skipIfUnchanged) {
             val displayed = withContext(Dispatchers.IO) { FileStore.readDisplayed() }
             if (displayed != null &&
-                kotlin.math.abs(displayed.first - balance) < 1e-9 &&
-                kotlin.math.abs(displayed.second - used) < 1e-9
+                kotlin.math.abs(displayed.balance - balance) < 1e-9 &&
+                kotlin.math.abs(displayed.used - used) < 1e-9 &&
+                displayed.mode == effectiveMode
             ) {
                 onStatus("余额与用量均未变化，跳过本次刷屏")
                 return Rendered(balance, used, null, null, skipped = true)
@@ -120,14 +122,14 @@ object RefreshEngine {
 
         val stamp = LocalTime.stampNow() + " " + LocalTime.tzName()
         withContext(Dispatchers.IO) { StatusRenderer.loadFont(context) }
-        val bitmap = withContext(Dispatchers.Default) {
+        val raw = withContext(Dispatchers.Default) {
             StatusRenderer.render(balance, used, stamp, peak, window)
         }
 
         onStatus("预览已生成，正在查找蓝牙设备…")
-        val planes = withContext(Dispatchers.Default) { StatusRenderer.toPlanes(bitmap) }
-        val push = Epd42Ble.push(context, planes.first, planes.second, onLog = onStatus)
-        withContext(Dispatchers.IO) { FileStore.markDisplayed(balance, used) }
-        return Rendered(balance, used, bitmap, push.deviceName, skipped = false)
+        val payload = withContext(Dispatchers.Default) { Dither.build(raw, effectiveMode) }
+        val push = Epd42Ble.push(context, payload, onLog = onStatus)
+        withContext(Dispatchers.IO) { FileStore.markDisplayed(balance, used, effectiveMode) }
+        return Rendered(balance, used, payload.preview, push.deviceName, skipped = false)
     }
 }

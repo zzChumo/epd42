@@ -92,26 +92,33 @@ object FileStore {
         file.writeText(json.toString(2), Charsets.UTF_8)
     }
 
-    /** 读取屏幕上已显示的 (余额, 今日使用量)；没有记录时返回 null。 */
-    fun readDisplayed(): Pair<Double, Double>? {
+    data class Displayed(val balance: Double, val used: Double, val mode: String)
+
+    /** 读取屏幕上已显示的 (余额, 今日使用量, 取模算法)；没有记录时返回 null。 */
+    fun readDisplayed(): Displayed? {
         val file = stateFile()
         if (!file.exists()) return null
         return runCatching {
             val json = JSONObject(decode(file.readBytes()))
             if (json.has("displayed_balance") && json.has("displayed_used")) {
-                json.optDouble("displayed_balance") to json.optDouble("displayed_used")
+                Displayed(
+                    balance = json.optDouble("displayed_balance"),
+                    used = json.optDouble("displayed_used"),
+                    mode = json.optString("displayed_mode", "4gray"),
+                )
             } else null
         }.getOrNull()
     }
 
     /** 推送成功后记录「屏幕正在显示的值」（CLI 同名字段）。 */
-    fun markDisplayed(balance: Double, used: Double) {
+    fun markDisplayed(balance: Double, used: Double, mode: String) {
         val file = stateFile()
         if (!file.exists()) return
         runCatching {
             val json = JSONObject(decode(file.readBytes()))
             json.put("displayed_balance", round6(balance))
             json.put("displayed_used", round6(used))
+            json.put("displayed_mode", mode)
             file.writeText(json.toString(2), Charsets.UTF_8)
         }
     }

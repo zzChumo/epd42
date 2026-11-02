@@ -110,7 +110,7 @@ object StatusRenderer {
         canvas.drawLine(pad, 252f, WIDTH - pad, 252f, linePaint)
         canvas.drawText(footerText, WIDTH / 2f, 272f + footerPaint.textSize * 0.5f, footerPaint)
 
-        return quantize4(bmp)
+        return bmp   // 灰度原图（取模算法在 Dither.build 里处理）
     }
 
     /** 8bit 灰度 → 4 级灰阶（最近邻）。 */
