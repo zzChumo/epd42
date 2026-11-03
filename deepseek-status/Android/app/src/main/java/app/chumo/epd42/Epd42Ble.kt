@@ -126,6 +126,28 @@ object Epd42Ble {
         namePrefix: String,
         onLog: (String) -> Unit,
     ): SessionTarget {
+        // 开发者模式指定了 MAC：所有连接尝试都使用该地址（不扫描、不用缓存）
+        val specifiedMac = SettingsStore.effectiveMac(context)
+        if (specifiedMac != null) {
+            onLog("使用指定 MAC 地址 $specifiedMac 连接（跳过扫描）…")
+            val specifiedDevice = try {
+                adapter.getRemoteDevice(specifiedMac)
+            } catch (e: Exception) {
+                throw IllegalStateException("指定 MAC 地址无效：$specifiedMac", e)
+            }
+            val specifiedSession = GattSession(context, onLog)
+            try {
+                specifiedSession.connectAndDiscover(specifiedDevice)
+            } catch (e: Exception) {
+                specifiedSession.close()
+                throw IllegalStateException(
+                    "连接指定 MAC 地址失败：$specifiedMac（${e.javaClass.simpleName}: ${e.message}）", e
+                )
+            }
+            onLog("已连接：$specifiedMac（指定 MAC）")
+            return SessionTarget(specifiedSession, specifiedDevice, 0, specifiedMac)
+        }
+
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         var device: BluetoothDevice? = null
         var rssi = 0

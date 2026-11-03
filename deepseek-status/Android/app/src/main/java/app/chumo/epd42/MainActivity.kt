@@ -168,6 +168,7 @@ private fun EpdApp() {
     var selectedTab by remember { mutableStateOf(0) }
     var developerMode by remember { mutableStateOf(SettingsStore.isDeveloperMode(context)) }
     var ditherMode by remember { mutableStateOf(SettingsStore.ditherMode(context)) }
+    var specifiedMac by remember { mutableStateOf(SettingsStore.specifiedMac(context)) }
     var customBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var customPreview by remember { mutableStateOf<Bitmap?>(null) }
     var customStatus by remember { mutableStateOf("") }
@@ -777,6 +778,7 @@ private fun EpdApp() {
                     modifier = Modifier.padding(padding),
                     developerMode = developerMode,
                     ditherMode = ditherMode,
+                    specifiedMac = specifiedMac,
                     onDeveloperModeChange = {
                         developerMode = it
                         SettingsStore.setDeveloperMode(context, it)
@@ -784,6 +786,10 @@ private fun EpdApp() {
                     onDitherModeChange = {
                         ditherMode = it
                         SettingsStore.setDitherMode(context, it)
+                    },
+                    onSpecifiedMacChange = {
+                        specifiedMac = it
+                        SettingsStore.setSpecifiedMac(context, it)
                     },
                 )
             }
@@ -966,8 +972,10 @@ private fun SettingsTab(
     modifier: Modifier = Modifier,
     developerMode: Boolean,
     ditherMode: String,
+    specifiedMac: String,
     onDeveloperModeChange: (Boolean) -> Unit,
     onDitherModeChange: (String) -> Unit,
+    onSpecifiedMacChange: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1038,6 +1046,20 @@ private fun SettingsTab(
                         }
                     }
                 }
+                Spacer(Modifier.height(16.dp))
+                val macInvalid = specifiedMac.isNotBlank() && SettingsStore.normalizeMac(specifiedMac) == null
+                TextField(
+                    value = specifiedMac,
+                    onValueChange = onSpecifiedMacChange,
+                    singleLine = true,
+                    isError = macInvalid,
+                    label = { Text("指定MAC地址") },
+                    supportingText = if (macInvalid) {
+                        { Text("非法MAC地址") }
+                    } else null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }
