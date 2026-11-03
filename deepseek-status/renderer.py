@@ -67,9 +67,11 @@ def render(
     # ── 第一行：梁文峰（峰时）/ 梁文谷（谷时） ──
     name = "梁文峰" if peak else "梁文谷"
     window = window_text if window_text else ("峰时 08:30–00:30" if peak else "谷时 00:30–08:30")
+    # 顶部行：左侧标题与右侧峰谷文本统一按同一条基线对齐（字号不变）
+    top_baseline = 18 + f_label.getmetrics()[0]      # 与标题的原位置等价
     _draw_text(d, (pad, 18), "DeepSeek 计费时段", f_label, BLACK)
     _draw_text(d, (pad, 40), name, f_name, BLACK)
-    _draw_text(d, (WIDTH - pad, 22), window, f_side, BLACK, anchor="ra")
+    _draw_text(d, (WIDTH - pad, top_baseline), window, f_side, BLACK, anchor="rs")
 
     # 分隔线
     d.line([(pad, 118), (WIDTH - pad, 118)], fill=GRAY_L, width=1)

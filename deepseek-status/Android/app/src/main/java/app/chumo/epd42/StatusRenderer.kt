@@ -76,7 +76,7 @@ object StatusRenderer {
         canvas.drawText("DeepSeek 计费时段", pad, 18f + 15f, paint(15f, weight = "thin"))
         val name = if (peak) "梁文峰" else "梁文谷"
         canvas.drawText(name, pad, 48f + 58f, paint(58f, weight = "main"))
-        canvas.drawText(windowText, WIDTH - pad, 22f + 14f, paint(14f, weight = "thin", align = Paint.Align.RIGHT))
+        canvas.drawText(windowText, WIDTH - pad, 18f + 15f, paint(14f, weight = "thin", align = Paint.Align.RIGHT))   // 与左侧标题同基线
 
         // 分隔线
         val linePaint = Paint().apply {
